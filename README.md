@@ -1,4 +1,4 @@
-# Udistributed Ujob Uqueue
+# Distributed Job Queue
 
 A Sidekiq/Celery-inspired distributed background job queue in Go — reliable at-least-once delivery, retries, dead-letter queues, and full observability.
 

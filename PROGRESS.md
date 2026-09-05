@@ -1,4 +1,4 @@
-# PROGRESS — Udistributed Ujob Uqueue
+# PROGRESS — Distributed Job Queue
 
 > Single source of truth for "where we are." Update at the end of every work chunk so any fresh
 > session can resume from here.
