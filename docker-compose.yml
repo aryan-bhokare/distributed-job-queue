@@ -1,0 +1,27 @@
+# Phase 1: just Redis. Run the Go binaries locally against it:
+#
+#   docker compose up -d
+#   go run ./cmd/worker                                              # terminal 1
+#   go run ./cmd/enqueue send_email '{"to":"a@b.com","template":"x"}' # terminal 2
+#
+# If host port 6379 is already taken (other Redis containers), pick another:
+#   REDIS_PORT=6380 docker compose up -d
+#   REDIS_ADDR=localhost:6380 go run ./cmd/worker
+#
+# The Go app itself gets containerized in Phase 9 (multi-stage Dockerfile).
+services:
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+volumes:
+  redis-data:

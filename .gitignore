@@ -10,4 +10,7 @@
 .env.*
 *.pem
 
-# (add language-specific ignores when the stack is chosen)
+# Go
+/bin/            # compiled binaries (build output)
+*.test           # test binaries
+*.out            # coverage / profile output
