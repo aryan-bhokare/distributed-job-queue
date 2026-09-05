@@ -1,0 +1,13 @@
+# OS / editor
+.DS_Store
+*.swp
+*~
+.idea/
+.vscode/
+
+# secrets / env
+.env
+.env.*
+*.pem
+
+# (add language-specific ignores when the stack is chosen)
