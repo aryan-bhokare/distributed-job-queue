@@ -10,7 +10,7 @@
 .env.*
 *.pem
 
-# Go
-/bin/            # compiled binaries (build output)
-*.test           # test binaries
-*.out            # coverage / profile output
+# Go (note: .gitignore does NOT support inline comments — patterns only)
+/bin/
+*.test
+*.out
