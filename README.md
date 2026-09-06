@@ -22,7 +22,7 @@ vs. Redis Lists / Kafka / RabbitMQ / Postgres in **[ADR-0002](docs/adr/0002-redi
 Building in phases (see [design §13](docs/design.md#13-phased-build-plan-each-phase-demoable--committed)):
 
 - [x] **Phase 1 — Vertical slice**: enqueue → worker consumes via a consumer group → runs a handler → acks. Proven end-to-end.
-- [ ] Phase 2 — Event bus + live dashboard (SSE)
+- [x] **Phase 2 — Event bus + live dashboard**: every transition is published to a Redis Pub/Sub bus; a dashboard streams it to the browser over SSE with a live board + small animations. Enqueue from the UI and watch jobs flow.
 - [ ] Phase 3 — Worker pool + graceful shutdown
 - [ ] Phase 4 — Retries + backoff + DLQ
 - [ ] Phase 5 — Delayed jobs + scheduler
@@ -44,22 +44,30 @@ docker compose up -d
 # 2. Run a worker (consumes + executes jobs)
 go run ./cmd/worker
 
-# 3. In another terminal, enqueue jobs
+# 3. Run the live dashboard, then open http://localhost:8080
+go run ./cmd/dashboard
+
+# 4. Enqueue jobs — from the dashboard's "+ Enqueue job" button, or the CLI:
 go run ./cmd/enqueue send_email  '{"to":"you@example.com","template":"welcome"}'
 go run ./cmd/enqueue generate_pdf '{"doc":"invoice-42"}'
 ```
 
-You'll see the worker pick up each job, run the matching handler, and log it as done (structured
-JSON logs). `generate_pdf` deliberately takes ~1.5s to make the async nature visible.
+Watch the dashboard: each job flows **Queued → Running → Done** in real time (SSE), with small
+animations. `generate_pdf` deliberately takes ~1.5s so you can see the async nature. The worker also
+logs each transition as structured JSON.
 
 ## Layout
 
 ```
 cmd/worker      # runs a worker
 cmd/enqueue     # CLI to enqueue a job
+cmd/dashboard   # runs the live dashboard (SSE + control API + embedded UI)
 internal/job    # Job envelope + ULID
 internal/broker # Redis Streams ops (XADD / XREADGROUP / XACK)
 internal/worker # consume → handle → ack loop + handler registry
+internal/events # event bus: publish/subscribe job transitions (Redis Pub/Sub)
+internal/dashboard # SSE hub + control handlers
+web/            # dependency-free dashboard UI, embedded via go:embed
 docs/           # design.md, ADRs, reading-backlog.md
 ```
 

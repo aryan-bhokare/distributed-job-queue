@@ -14,6 +14,7 @@ import (
 	"github.com/redis/go-redis/v9"
 
 	"github.com/aryan-bhokare/distributed-job-queue/internal/broker"
+	"github.com/aryan-bhokare/distributed-job-queue/internal/events"
 	"github.com/aryan-bhokare/distributed-job-queue/internal/job"
 )
 
@@ -45,6 +46,10 @@ func main() {
 		fmt.Println("enqueue:", err)
 		os.Exit(1)
 	}
+	// Tell the dashboard a job just landed (fire-and-forget).
+	events.NewPublisher(rdb).Publish(context.Background(), events.Event{
+		Kind: events.Enqueued, JobID: j.ID, JobType: j.Type, Queue: j.Queue,
+	})
 	fmt.Printf("enqueued %s job %s\n", j.Type, j.ID)
 }
 

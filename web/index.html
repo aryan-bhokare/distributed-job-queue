@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Job Queue — Live</title>
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <header>
+    <div class="brand">
+      <span class="dot" id="conn" title="connection"></span>
+      <h1>Distributed Job Queue <span>· live</span></h1>
+    </div>
+    <div class="actions">
+      <button id="enqueue">+ Enqueue job</button>
+      <button id="burst" class="ghost">Burst ×10</button>
+    </div>
+  </header>
+
+  <section class="counters">
+    <div class="counter"><span id="c-queued">0</span><label>Queued</label></div>
+    <div class="counter"><span id="c-running">0</span><label>Running</label></div>
+    <div class="counter"><span id="c-done">0</span><label>Done</label></div>
+    <div class="counter"><span id="c-failed">0</span><label>Failed</label></div>
+  </section>
+
+  <main class="board">
+    <div class="lane" data-state="queued">
+      <h2>Queued</h2><div class="cards" id="lane-queued"></div>
+    </div>
+    <div class="lane" data-state="running">
+      <h2>Running</h2><div class="cards" id="lane-running"></div>
+    </div>
+    <div class="lane" data-state="done">
+      <h2>Done</h2><div class="cards" id="lane-done"></div>
+    </div>
+    <div class="lane" data-state="failed">
+      <h2>Failed / Skipped</h2><div class="cards" id="lane-failed"></div>
+    </div>
+  </main>
+
+  <footer>
+    Events stream over <b>SSE</b> from a Redis <b>Pub/Sub</b> bus — the dashboard is a pure observer,
+    zero load on the job hot path.
+  </footer>
+
+  <script src="/app.js"></script>
+</body>
+</html>

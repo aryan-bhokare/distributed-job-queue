@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/aryan-bhokare/distributed-job-queue/internal/broker"
+	"github.com/aryan-bhokare/distributed-job-queue/internal/events"
 	"github.com/aryan-bhokare/distributed-job-queue/internal/job"
 )
 
@@ -23,15 +24,17 @@ type Worker struct {
 	name     string
 	queue    string
 	broker   *broker.Broker
+	pub      *events.Publisher // may be nil (worker runs fine without a dashboard)
 	handlers map[string]Handler
 	log      *slog.Logger
 }
 
-func New(name, queue string, b *broker.Broker) *Worker {
+func New(name, queue string, b *broker.Broker, pub *events.Publisher) *Worker {
 	return &Worker{
 		name:     name,
 		queue:    queue,
 		broker:   b,
+		pub:      pub,
 		handlers: make(map[string]Handler),
 		log:      slog.Default().With("worker", name),
 	}
@@ -73,19 +76,32 @@ func (w *Worker) process(ctx context.Context, d broker.Delivered) {
 	start := time.Now()
 	log := w.log.With("job_id", d.Job.ID, "type", d.Job.Type)
 
+	// base event carries the fields common to every transition for this job.
+	base := events.Event{JobID: d.Job.ID, JobType: d.Job.Type, Queue: d.Job.Queue,
+		Worker: w.name, Attempt: d.Job.Attempt}
+
 	h, ok := w.handlers[d.Job.Type]
 	if !ok {
 		// No handler for this type. Ack so it doesn't sit in the PEL forever.
 		// (Phase 4 will route unknown/failed jobs to the DLQ instead.)
 		log.Warn("no handler registered; acking and skipping")
+		w.emit(ctx, base, events.NoHandler)
 		_ = w.broker.Ack(ctx, w.queue, d.EntryID)
 		return
 	}
 
-	if err := h(ctx, d.Job); err != nil {
+	w.emit(ctx, base, events.Started)
+	err := h(ctx, d.Job)
+	dur := time.Since(start)
+
+	if err != nil {
 		// Phase 1: log and ack to avoid an infinite redelivery loop.
 		// Phase 4 replaces this with retry-with-backoff, then DLQ.
 		log.Error("job failed (acking for now; retries land in Phase 4)", "err", err)
+		ev := base
+		ev.Error = err.Error()
+		ev.DurationMs = dur.Milliseconds()
+		w.emit(ctx, ev, events.Failed)
 		_ = w.broker.Ack(ctx, w.queue, d.EntryID)
 		return
 	}
@@ -95,5 +111,14 @@ func (w *Worker) process(ctx context.Context, d broker.Delivered) {
 		log.Error("ack failed (job will be redelivered)", "err", err)
 		return
 	}
-	log.Info("job done", "dur", time.Since(start).String())
+	ev := base
+	ev.DurationMs = dur.Milliseconds()
+	w.emit(ctx, ev, events.Succeeded)
+	log.Info("job done", "dur", dur.String())
+}
+
+// emit publishes a transition to the event bus (no-op if no publisher wired).
+func (w *Worker) emit(ctx context.Context, e events.Event, kind string) {
+	e.Kind = kind
+	w.pub.Publish(ctx, e)
 }

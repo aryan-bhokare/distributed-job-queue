@@ -9,12 +9,12 @@ Legend: ⏱ time · 🎯 what to focus on · ✅ what I should be able to say af
 
 ## Tier 0 — Before Phase 1 (must-do, ~1 hour total)
 
-- [ ] **My own design + the transport ADR** ⏱ 15 min
+- [X] **My own design + the transport ADR** ⏱ 15 min
   - `docs/design.md` (focus §4–§8) and `docs/adr/0002-redis-streams-as-transport.md`
   - 🎯 The job lifecycle (§6) and delivery semantics (§8). I wrote the *what*; the reading below
     makes the *how* concrete.
 
-- [ ] **Redis Streams + consumer groups** — the concept that unlocks everything ⏱ 30–40 min
+- [x] **Redis Streams + consumer groups** — the concept that unlocks everything ⏱ 30–40 min
   - [Redis Streams — official guide](https://redis.io/docs/latest/develop/data-types/streams/)
     — read through, but slow down hard on the **Consumer Groups** section.
   - Command refs to skim so the verbs stick:
@@ -60,10 +60,21 @@ Phase 1 Go is beginner-level; each idiom gets explained inline as it's written. 
   - AWS "Exponential Backoff And Jitter" article (the canonical explainer of *why* jitter).
 - [ ] **Redis Lua scripting** — before **Phase 5** (scheduler's atomic ZSET→Stream move).
   - [EVAL / scripting docs](https://redis.io/docs/latest/develop/interact/programmability/eval-intro/)
-- [ ] **Server-Sent Events (SSE)** — before the **dashboard** (Phase 2).
-  - MDN "Using server-sent events" + Go `http.Flusher` pattern.
-- [ ] **Redis Pub/Sub** — before the **event bus** (Phase 2).
+### 🔵 Active for Phase 2 (read these next — the dashboard's building blocks)
+- [ ] **Redis Pub/Sub** ⏱ 15 min — how the event bus works.
   - [Redis Pub/Sub docs](https://redis.io/docs/latest/develop/interact/pubsub/)
+  - 🎯 Fire-and-forget semantics: publishers don't block on subscribers, no history/replay. That's
+    *why* the dashboard can never affect job processing (ADR-0003).
+  - ✅ I can say: "transitions go on a Pub/Sub channel; if the dashboard is down, jobs don't care."
+- [ ] **Server-Sent Events (SSE)** ⏱ 20 min — server→browser streaming over plain HTTP.
+  - [MDN — Using server-sent events](https://developer.mozilla.org/en-US/docs/Web/API/Server-sent_events/Using_server-sent_events)
+  - 🎯 The `text/event-stream` wire format (`data:` lines, `\n\n` separators, named `event:` types),
+    the browser `EventSource` API (auto-reconnect), and Go's `http.Flusher` for pushing bytes.
+  - ✅ I can say: "SSE is one-way + auto-reconnecting; I used it instead of WebSockets because the
+    stream is server→client and client actions are just POSTs."
+- [ ] **Go `go:embed`** ⏱ 5 min — ship the UI inside the binary.
+  - [pkg.go.dev/embed](https://pkg.go.dev/embed) — `//go:embed` directive; embeds files from the
+    *same directory* (can't reach parents — that's why `web/` has its own `embed.go`).
 - [ ] **Prometheus Go client** — before **Phase 8** (observability).
   - [prometheus/client_golang](https://prometheus.io/docs/guides/go-application/)
 - [ ] **Multi-stage Docker builds for Go & `distroless`** — before **Phase 9** (infra).

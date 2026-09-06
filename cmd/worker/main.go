@@ -14,6 +14,7 @@ import (
 	"github.com/redis/go-redis/v9"
 
 	"github.com/aryan-bhokare/distributed-job-queue/internal/broker"
+	"github.com/aryan-bhokare/distributed-job-queue/internal/events"
 	"github.com/aryan-bhokare/distributed-job-queue/internal/job"
 	"github.com/aryan-bhokare/distributed-job-queue/internal/worker"
 )
@@ -26,7 +27,8 @@ func main() {
 	defer rdb.Close()
 
 	b := broker.New(rdb)
-	w := worker.New("worker-1", job.DefaultQueue, b)
+	pub := events.NewPublisher(rdb) // publishes transitions to the dashboard bus
+	w := worker.New("worker-1", job.DefaultQueue, b, pub)
 
 	// Demo handler #1: instant "email send" — the clean happy path.
 	w.Register("send_email", func(ctx context.Context, j job.Job) error {
