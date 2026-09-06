@@ -23,7 +23,7 @@ Building in phases (see [design §13](docs/design.md#13-phased-build-plan-each-p
 
 - [x] **Phase 1 — Vertical slice**: enqueue → worker consumes via a consumer group → runs a handler → acks. Proven end-to-end.
 - [x] **Phase 2 — Event bus + live dashboard**: every transition is published to a Redis Pub/Sub bus; a dashboard streams it to the browser over SSE with a live board + small animations. Enqueue from the UI and watch jobs flow.
-- [ ] Phase 3 — Worker pool + graceful shutdown
+- [x] **Phase 3 — Worker pool + graceful shutdown**: each worker runs a bounded goroutine pool (`WORKER_CONCURRENCY`); on SIGTERM it stops fetching, lets in-flight jobs finish and ack within a grace window, then exits. Multiple worker processes load-balance via the consumer group.
 - [ ] Phase 4 — Retries + backoff + DLQ
 - [ ] Phase 5 — Delayed jobs + scheduler
 - [ ] Phase 6 — Reaper (dead-worker recovery)
@@ -55,6 +55,18 @@ go run ./cmd/enqueue generate_pdf '{"doc":"invoice-42"}'
 Watch the dashboard: each job flows **Queued → Running → Done** in real time (SSE), with small
 animations. `generate_pdf` deliberately takes ~1.5s so you can see the async nature. The worker also
 logs each transition as structured JSON.
+
+**Scale it** — each worker runs a bounded goroutine pool, and multiple worker processes share the
+queue via the consumer group:
+
+```bash
+WORKER_CONCURRENCY=10 go run ./cmd/worker                      # 10 jobs in parallel
+WORKER_NAME=worker-A go run ./cmd/worker &                     # run several processes;
+WORKER_NAME=worker-B go run ./cmd/worker &                     # the group load-balances jobs
+```
+
+On `Ctrl-C`/SIGTERM a worker stops fetching, lets in-flight jobs finish and ack (within a grace
+window), then exits — no dropped or double-acked work.
 
 ## Layout
 

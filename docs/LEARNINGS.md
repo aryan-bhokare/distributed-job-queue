@@ -63,3 +63,35 @@ current as we go, not at the end.
 
 **Testing gotcha**
 - macOS has no `timeout(1)`; use `curl --max-time N` to bound a streaming request in a test.
+
+## Phase 3 — worker pool + graceful shutdown (2026-09-06)
+
+**The Go worker-pool pattern**
+- One unbuffered `chan Delivered`, a fetcher that pushes onto it, and N goroutines that `for d :=
+  range jobs`. The unbuffered channel = **natural backpressure**: the fetcher blocks until a
+  processor is free, so we never pull more than the pool can handle.
+- **Closing the channel is the drain signal.** `range` over a channel exits once it's closed AND
+  empty — so after `close(jobs)`, each goroutine finishes its current job, sees the drained channel,
+  and returns. Clean, no sentinel values.
+- `sync.WaitGroup` tracks the pool: `wg.Add(1)` per goroutine, `defer wg.Done()`, `wg.Wait()` to
+  join. To wait-with-a-deadline, run `wg.Wait()` in a goroutine that closes a `done` channel, then
+  `select { case <-done: case <-time.After(grace): }`.
+
+**The two-context trick (the crux of graceful shutdown)**
+- The root ctx (from `signal.NotifyContext`) cancels on SIGTERM. If handlers/acks used *that* ctx,
+  they'd be killed the instant SIGTERM lands → the "ack failed: context canceled" bug.
+- Fix: the **fetcher** uses the root ctx (so it stops pulling new work on SIGTERM), but the
+  **processors** use a *separate* `procCtx` (from `context.Background()`) that survives SIGTERM.
+  In-flight jobs finish and ack normally; only if they exceed the grace window do we `procCancel()`
+  the stragglers (which then stay unacked in the PEL → reclaimed by the reaper).
+- Proven: SIGTERM mid-job → the job ran to completion (`dur 1.5s`), acked, `XPENDING=0`, zero
+  "ack failed". Contrast Phase 2 where the same kill produced a canceled ack.
+
+**Distributed for free**
+- Two `cmd/worker` processes with different `WORKER_NAME`s split a 20-job burst exactly 10/10 — the
+  consumer group hands each *consumer* a disjoint set of entries. Horizontal scaling needs no code,
+  just more processes. (Consumer name matters: it identifies the consumer in the group + its PEL.)
+
+**Minor**
+- go-redis's `XReadGroup` with `Block` doesn't abort instantly on ctx-cancel; it can wait out the
+  block timeout (I use 2s), so shutdown can lag up to ~2s. Fine; documented.

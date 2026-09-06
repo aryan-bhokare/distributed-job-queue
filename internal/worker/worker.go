@@ -9,6 +9,7 @@ package worker
 import (
 	"context"
 	"log/slog"
+	"sync"
 	"time"
 
 	"github.com/aryan-bhokare/distributed-job-queue/internal/broker"
@@ -21,53 +22,119 @@ import (
 type Handler func(ctx context.Context, j job.Job) error
 
 type Worker struct {
-	name     string
-	queue    string
-	broker   *broker.Broker
-	pub      *events.Publisher // may be nil (worker runs fine without a dashboard)
-	handlers map[string]Handler
-	log      *slog.Logger
+	name        string
+	queue       string
+	broker      *broker.Broker
+	pub         *events.Publisher // may be nil (worker runs fine without a dashboard)
+	handlers    map[string]Handler
+	concurrency int           // number of jobs processed in parallel
+	grace       time.Duration // how long in-flight jobs get to finish on shutdown
+	log         *slog.Logger
 }
 
 func New(name, queue string, b *broker.Broker, pub *events.Publisher) *Worker {
 	return &Worker{
-		name:     name,
-		queue:    queue,
-		broker:   b,
-		pub:      pub,
-		handlers: make(map[string]Handler),
-		log:      slog.Default().With("worker", name),
+		name:        name,
+		queue:       queue,
+		broker:      b,
+		pub:         pub,
+		handlers:    make(map[string]Handler),
+		concurrency: 5,
+		grace:       25 * time.Second,
+		log:         slog.Default().With("worker", name),
+	}
+}
+
+// SetConcurrency sets how many jobs run in parallel (default 5).
+func (w *Worker) SetConcurrency(n int) {
+	if n > 0 {
+		w.concurrency = n
+	}
+}
+
+// SetShutdownGrace sets how long in-flight jobs may run after a stop signal.
+func (w *Worker) SetShutdownGrace(d time.Duration) {
+	if d > 0 {
+		w.grace = d
 	}
 }
 
 // Register wires a job type to the function that runs it.
 func (w *Worker) Register(jobType string, h Handler) { w.handlers[jobType] = h }
 
-// Run is the worker loop. It returns when ctx is cancelled (Ctrl-C / SIGTERM).
+// Run starts a pool of `concurrency` processor goroutines fed by a single fetcher,
+// and returns after a graceful drain when ctx is cancelled (Ctrl-C / SIGTERM).
+//
+// The shape is the classic Go worker pool: a fetcher pushes jobs onto an unbuffered
+// channel; N goroutines `range` over it. Closing the channel is the drain signal —
+// each goroutine finishes its current job, sees the closed+empty channel, and exits.
 func (w *Worker) Run(ctx context.Context) error {
 	if err := w.broker.EnsureGroup(ctx, w.queue); err != nil {
 		return err
 	}
-	w.log.Info("worker started", "queue", w.queue)
+	w.log.Info("worker started", "queue", w.queue, "concurrency", w.concurrency)
 
-	for {
-		// Respect cancellation before doing more work.
-		if ctx.Err() != nil {
-			return ctx.Err()
-		}
-		// Block up to 5s for new jobs; the timeout lets us loop back and re-check
-		// ctx even when the queue is idle.
-		batch, err := w.broker.Read(ctx, w.queue, w.name, 10, 5*time.Second)
+	jobs := make(chan broker.Delivered) // unbuffered → natural backpressure
+	var wg sync.WaitGroup
+
+	// procCtx drives handlers + acks and is deliberately NOT derived from ctx: a
+	// SIGTERM cancels ctx, but we do NOT want to kill in-flight jobs or their acks
+	// mid-flight (that's the "ack failed: context canceled" bug from Phase 2). We
+	// drain within a grace period, then cancel only the stragglers.
+	procCtx, procCancel := context.WithCancel(context.Background())
+	defer procCancel()
+
+	for i := 0; i < w.concurrency; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for d := range jobs { // exits when jobs is closed AND drained
+				w.process(procCtx, d)
+			}
+		}()
+	}
+
+	// Fetch until ctx is cancelled; the unbuffered channel means we only pull as
+	// fast as the pool drains.
+	w.fetch(ctx, jobs)
+
+	// --- graceful shutdown ---
+	w.log.Info("stop signal received; draining in-flight jobs", "grace", w.grace.String())
+	close(jobs) // no more work; processors finish current jobs then return
+
+	done := make(chan struct{})
+	go func() { wg.Wait(); close(done) }()
+	select {
+	case <-done:
+		w.log.Info("all in-flight jobs drained cleanly ✓")
+	case <-time.After(w.grace):
+		// Stragglers exceeded the grace window. Cancel them; because we never
+		// ack'd them they stay in the PEL and get reclaimed by the reaper (Phase 6).
+		w.log.Warn("grace elapsed; cancelling stragglers (they stay pending and get reclaimed)")
+		procCancel()
+		wg.Wait()
+	}
+	return nil
+}
+
+// fetch reads batches from the broker and feeds the pool until ctx is cancelled.
+func (w *Worker) fetch(ctx context.Context, jobs chan<- broker.Delivered) {
+	for ctx.Err() == nil {
+		batch, err := w.broker.Read(ctx, w.queue, w.name, int64(w.concurrency), 2*time.Second)
 		if err != nil {
 			if ctx.Err() != nil {
-				return ctx.Err()
+				return
 			}
 			w.log.Error("read failed", "err", err)
-			time.Sleep(time.Second) // brief backoff before retrying the read
+			time.Sleep(time.Second)
 			continue
 		}
 		for _, d := range batch {
-			w.process(ctx, d)
+			select {
+			case jobs <- d:
+			case <-ctx.Done():
+				return // stop feeding; delivered-but-unfed entries remain in the PEL
+			}
 		}
 	}
 }

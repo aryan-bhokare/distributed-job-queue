@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"strconv"
 	"syscall"
 	"time"
 
@@ -28,7 +29,10 @@ func main() {
 
 	b := broker.New(rdb)
 	pub := events.NewPublisher(rdb) // publishes transitions to the dashboard bus
-	w := worker.New("worker-1", job.DefaultQueue, b, pub)
+	w := worker.New(envOr("WORKER_NAME", "worker-1"), job.DefaultQueue, b, pub)
+	if n, err := strconv.Atoi(os.Getenv("WORKER_CONCURRENCY")); err == nil {
+		w.SetConcurrency(n)
+	}
 
 	// Demo handler #1: instant "email send" — the clean happy path.
 	w.Register("send_email", func(ctx context.Context, j job.Job) error {
