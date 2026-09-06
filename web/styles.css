@@ -8,7 +8,9 @@
   --muted: #8b949e;
   --queued: #d29922;
   --running: #58a6ff;
+  --retrying: #db6d28;
   --done: #3fb950;
+  --dead: #da3633;
   --failed: #f85149;
   --accent: #58a6ff;
   --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, monospace;
@@ -61,11 +63,12 @@ button.ghost { background: transparent; color: var(--text); border: 1px solid va
 .counter label { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .5px; }
 .counter:nth-child(1) span { color: var(--queued); }
 .counter:nth-child(2) span { color: var(--running); }
-.counter:nth-child(3) span { color: var(--done); }
-.counter:nth-child(4) span { color: var(--failed); }
+.counter:nth-child(3) span { color: var(--retrying); }
+.counter:nth-child(4) span { color: var(--done); }
+.counter:nth-child(5) span { color: var(--dead); }
 
 .board {
-  display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px;
+  display: grid; grid-template-columns: repeat(5, 1fr); gap: 14px;
   padding: 4px 24px 24px;
 }
 .lane { background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
@@ -74,10 +77,11 @@ button.ghost { background: transparent; color: var(--text); border: 1px solid va
   font-size: 12px; text-transform: uppercase; letter-spacing: .6px; color: var(--muted);
   margin: 0; padding: 12px 14px; border-bottom: 1px solid var(--border);
 }
-.lane[data-state="queued"]  h2 { color: var(--queued); }
-.lane[data-state="running"] h2 { color: var(--running); }
-.lane[data-state="done"]    h2 { color: var(--done); }
-.lane[data-state="failed"]  h2 { color: var(--failed); }
+.lane[data-state="queued"]   h2 { color: var(--queued); }
+.lane[data-state="running"]  h2 { color: var(--running); }
+.lane[data-state="retrying"] h2 { color: var(--retrying); }
+.lane[data-state="done"]     h2 { color: var(--done); }
+.lane[data-state="dead"]     h2 { color: var(--dead); }
 .cards { padding: 10px; display: flex; flex-direction: column; gap: 8px; overflow-y: auto; max-height: 62vh; }
 
 .card {
@@ -85,11 +89,12 @@ button.ghost { background: transparent; color: var(--text); border: 1px solid va
   border-radius: 7px; padding: 9px 11px; display: flex; flex-wrap: wrap; gap: 6px 10px; align-items: center;
   animation: slideIn .18s ease;
 }
-.card[data-state="queued"]  { border-left-color: var(--queued); }
-.card[data-state="running"] { border-left-color: var(--running); }
-.card[data-state="done"]    { border-left-color: var(--done); }
-.card[data-state="failed"]  { border-left-color: var(--failed); }
-.card[data-state="skipped"] { border-left-color: var(--muted); }
+.card[data-state="queued"]   { border-left-color: var(--queued); }
+.card[data-state="running"]  { border-left-color: var(--running); }
+.card[data-state="retrying"] { border-left-color: var(--retrying); }
+.card[data-state="done"]     { border-left-color: var(--done); }
+.card[data-state="dead"]     { border-left-color: var(--dead); }
+.card[data-state="skipped"]  { border-left-color: var(--muted); }
 
 .card .type { font-weight: 700; }
 .card .id   { color: var(--muted); }

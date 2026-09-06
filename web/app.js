@@ -3,19 +3,20 @@
 
 const $ = (id) => document.getElementById(id);
 
-// Each job state maps to a lane container. "skipped" shares the "failed" lane.
+// Each job state maps to a lane container. "skipped" shares the "dead" lane.
 const lanes = {
-  queued:  $("lane-queued"),
-  running: $("lane-running"),
-  done:    $("lane-done"),
-  failed:  $("lane-failed"),
-  skipped: $("lane-failed"),
+  queued:   $("lane-queued"),
+  running:  $("lane-running"),
+  retrying: $("lane-retrying"),
+  done:     $("lane-done"),
+  dead:     $("lane-dead"),
+  skipped:  $("lane-dead"),
 };
 
 // A live job event's `kind` maps to the UI state.
 const STATE_FROM_KIND = {
   enqueued: "queued", started: "running", succeeded: "done",
-  failed: "failed", no_handler: "skipped",
+  retrying: "retrying", dead: "dead", no_handler: "skipped",
 };
 
 const jobs = new Map(); // job id -> { el, state }
@@ -24,7 +25,6 @@ const shortId = (id) => (id ? "#" + id.slice(-6) : "#??????");
 const esc = (s) => String(s).replace(/[<>&]/g, (c) => ({ "<": "&lt;", ">": "&gt;", "&": "&amp;" }[c]));
 
 // render creates or updates a job card and moves it to the right lane.
-// Accepts either a snapshot view {id,type,state,...} or one made from an event.
 function render(v) {
   if (!v || !v.id) return;
   let entry = jobs.get(v.id);
@@ -35,12 +35,19 @@ function render(v) {
   }
   const el = entry.el;
   el.dataset.state = v.state;
-  el.innerHTML =
-    `<span class="type">${esc(v.type || "?")}</span>` +
-    `<span class="id">${shortId(v.id)}</span>` +
-    (v.worker ? `<span class="meta">${esc(v.worker)}</span>` : "") +
-    (v.duration_ms ? `<span class="meta">${v.duration_ms}ms</span>` : "") +
-    (v.error ? `<span class="err" title="${esc(v.error)}">${esc(v.error)}</span>` : "");
+
+  const bits = [
+    `<span class="type">${esc(v.type || "?")}</span>`,
+    `<span class="id">${shortId(v.id)}</span>`,
+  ];
+  if (v.worker) bits.push(`<span class="meta">${esc(v.worker)}</span>`);
+  if (v.attempt) bits.push(`<span class="meta">try ${v.attempt + 1}</span>`);
+  if (v.state === "retrying" && v.retry_in_ms)
+    bits.push(`<span class="meta">retry ~${(v.retry_in_ms / 1000).toFixed(1)}s</span>`);
+  if (v.duration_ms && (v.state === "done")) bits.push(`<span class="meta">${v.duration_ms}ms</span>`);
+  if (v.error && (v.state === "retrying" || v.state === "dead"))
+    bits.push(`<span class="err" title="${esc(v.error)}">${esc(v.error)}</span>`);
+  el.innerHTML = bits.join("");
 
   // Move to the correct lane only when the state actually changed.
   if (entry.state !== v.state) {
@@ -53,21 +60,23 @@ function render(v) {
 }
 
 function updateCounts() {
-  const c = { queued: 0, running: 0, done: 0, failed: 0 };
+  const c = { queued: 0, running: 0, retrying: 0, done: 0, dead: 0 };
   for (const [, e] of jobs) {
-    if (e.state === "skipped") c.failed++;
+    if (e.state === "skipped") c.dead++;
     else if (c[e.state] !== undefined) c[e.state]++;
   }
   $("c-queued").textContent = c.queued;
   $("c-running").textContent = c.running;
+  $("c-retrying").textContent = c.retrying;
   $("c-done").textContent = c.done;
-  $("c-failed").textContent = c.failed;
+  $("c-dead").textContent = c.dead;
 }
 
 const viewFromEvent = (ev) => ({
   id: ev.job_id, type: ev.job_type,
   state: STATE_FROM_KIND[ev.kind] || "queued",
-  worker: ev.worker, duration_ms: ev.duration_ms, error: ev.error,
+  worker: ev.worker, attempt: ev.attempt,
+  duration_ms: ev.duration_ms, retry_in_ms: ev.retry_in_ms, error: ev.error,
 });
 
 // --- SSE wiring -------------------------------------------------------------
@@ -78,5 +87,8 @@ es.onopen  = () => ($("conn").className = "dot ok");
 es.onerror = () => ($("conn").className = "dot bad"); // EventSource auto-reconnects
 
 // --- controls ---------------------------------------------------------------
-$("enqueue").onclick = () => fetch("/api/enqueue", { method: "POST" });
-$("burst").onclick = () => { for (let i = 0; i < 10; i++) fetch("/api/enqueue", { method: "POST" }); };
+const enqueue = (type) => fetch("/api/enqueue" + (type ? "?type=" + type : ""), { method: "POST" });
+$("enqueue").onclick = () => enqueue();
+$("flaky").onclick   = () => enqueue("flaky");
+$("fail").onclick    = () => enqueue("always_fail");
+$("burst").onclick   = () => { for (let i = 0; i < 10; i++) enqueue(); };

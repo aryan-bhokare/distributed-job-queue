@@ -24,8 +24,8 @@ Building in phases (see [design §13](docs/design.md#13-phased-build-plan-each-p
 - [x] **Phase 1 — Vertical slice**: enqueue → worker consumes via a consumer group → runs a handler → acks. Proven end-to-end.
 - [x] **Phase 2 — Event bus + live dashboard**: every transition is published to a Redis Pub/Sub bus; a dashboard streams it to the browser over SSE with a live board + small animations. Enqueue from the UI and watch jobs flow.
 - [x] **Phase 3 — Worker pool + graceful shutdown**: each worker runs a bounded goroutine pool (`WORKER_CONCURRENCY`); on SIGTERM it stops fetching, lets in-flight jobs finish and ack within a grace window, then exits. Multiple worker processes load-balance via the consumer group.
-- [ ] Phase 4 — Retries + backoff + DLQ
-- [ ] Phase 5 — Delayed jobs + scheduler
+- [x] **Phase 4 — Retries + backoff + DLQ**: a failed handler is retried with exponential backoff + jitter (job re-scheduled in a sorted set; a scheduler atomically promotes due jobs via a Lua script); after `max_retries` it's dead-lettered to `jobs:dead`. The dashboard shows *Retrying* and *Dead* lanes.
+- [ ] Phase 5 — Delayed jobs API (`EnqueueIn`) — the scheduler is already built in Phase 4; this just exposes user-facing delayed enqueue.
 - [ ] Phase 6 — Reaper (dead-worker recovery)
 - [ ] Phase 7 — Interactive demo / happy-path tour
 - [ ] Phase 8 — Observability (Prometheus + Grafana)
@@ -75,8 +75,9 @@ cmd/worker      # runs a worker
 cmd/enqueue     # CLI to enqueue a job
 cmd/dashboard   # runs the live dashboard (SSE + control API + embedded UI)
 internal/job    # Job envelope + ULID
-internal/broker # Redis Streams ops (XADD / XREADGROUP / XACK)
-internal/worker # consume → handle → ack loop + handler registry
+internal/broker # Redis Streams ops (XADD / XREADGROUP / XACK) + scheduled set + DLQ + Lua move
+internal/worker # consume → handle → ack loop, handler registry, retry/backoff/DLQ
+internal/scheduler # promotes due delayed/retry jobs into their streams (atomic Lua)
 internal/events # event bus: publish/subscribe job transitions (Redis Pub/Sub)
 internal/dashboard # SSE hub + control handlers
 web/            # dependency-free dashboard UI, embedded via go:embed

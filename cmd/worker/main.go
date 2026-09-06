@@ -5,6 +5,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"os"
 	"os/signal"
@@ -17,6 +18,7 @@ import (
 	"github.com/aryan-bhokare/distributed-job-queue/internal/broker"
 	"github.com/aryan-bhokare/distributed-job-queue/internal/events"
 	"github.com/aryan-bhokare/distributed-job-queue/internal/job"
+	"github.com/aryan-bhokare/distributed-job-queue/internal/scheduler"
 	"github.com/aryan-bhokare/distributed-job-queue/internal/worker"
 )
 
@@ -53,10 +55,31 @@ func main() {
 		return nil
 	})
 
-	// signal.NotifyContext cancels ctx on Ctrl-C / SIGTERM; the worker loop then
-	// returns. Full graceful drain of in-flight jobs lands in Phase 3.
+	// Demo handler #3: flaky — fails the first two attempts, then succeeds. Shows
+	// retry-with-backoff recovering on its own.
+	w.Register("flaky", func(ctx context.Context, j job.Job) error {
+		if j.Attempt < 2 {
+			return fmt.Errorf("transient failure on attempt %d", j.Attempt)
+		}
+		slog.Info("✅ flaky job finally succeeded", "job_id", j.ID, "attempt", j.Attempt)
+		return nil
+	})
+
+	// Demo handler #4: always fails — shows the job exhausting retries and landing
+	// in the dead-letter queue.
+	w.Register("always_fail", func(ctx context.Context, j job.Job) error {
+		return fmt.Errorf("permanent failure (attempt %d)", j.Attempt)
+	})
+
+	// signal.NotifyContext cancels ctx on Ctrl-C / SIGTERM; the worker drains
+	// in-flight jobs (Phase 3) before returning.
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+
+	// The scheduler promotes due retries/delayed jobs back into their streams.
+	// Running it inside each worker is safe (the Lua move is atomic); in a large
+	// deployment you'd run a dedicated scheduler (or elect a leader).
+	go scheduler.New(b).Run(ctx)
 
 	if err := w.Run(ctx); err != nil && ctx.Err() == nil {
 		slog.Error("worker crashed", "err", err)

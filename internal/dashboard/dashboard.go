@@ -30,11 +30,12 @@ const maxJobs = 200 // cap the in-memory view so it never grows unbounded
 type jobView struct {
 	ID         string    `json:"id"`
 	Type       string    `json:"type"`
-	State      string    `json:"state"` // queued|running|done|failed|skipped
+	State      string    `json:"state"` // queued|running|retrying|done|dead|skipped
 	Worker     string    `json:"worker,omitempty"`
 	Attempt    int       `json:"attempt"`
 	Error      string    `json:"error,omitempty"`
 	DurationMs int64     `json:"duration_ms,omitempty"`
+	RetryInMs  int64     `json:"retry_in_ms,omitempty"`
 	Updated    time.Time `json:"updated"`
 }
 
@@ -118,12 +119,15 @@ func (s *Server) apply(e events.Event) {
 	switch e.Kind {
 	case events.Enqueued:
 		v.State = "queued"
+		v.RetryInMs = 0
 	case events.Started:
 		v.State = "running"
 	case events.Succeeded:
 		v.State, v.DurationMs = "done", e.DurationMs
-	case events.Failed:
-		v.State, v.Error, v.DurationMs = "failed", e.Error, e.DurationMs
+	case events.Retrying:
+		v.State, v.Error, v.DurationMs, v.RetryInMs = "retrying", e.Error, e.DurationMs, e.RetryInMs
+	case events.Dead:
+		v.State, v.Error, v.DurationMs = "dead", e.Error, e.DurationMs
 	case events.NoHandler:
 		v.State = "skipped"
 	}
@@ -195,17 +199,29 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
 // (click a button, watch it flow). Kill-worker / fail / delay controls land in
 // Phase 7.
 func (s *Server) handleEnqueue(w http.ResponseWriter, r *http.Request) {
-	var typ string
-	var payload any
-	if time.Now().UnixNano()%2 == 0 {
-		typ, payload = "send_email", map[string]any{"to": "demo@user.com", "template": "welcome"}
-	} else {
-		typ, payload = "generate_pdf", map[string]any{"doc": "invoice"}
+	typ := r.URL.Query().Get("type") // optional: send_email|generate_pdf|flaky|always_fail
+	var payload any = map[string]any{}
+	switch typ {
+	case "":
+		// no type given → a random happy-path job
+		if time.Now().UnixNano()%2 == 0 {
+			typ, payload = "send_email", map[string]any{"to": "demo@user.com", "template": "welcome"}
+		} else {
+			typ, payload = "generate_pdf", map[string]any{"doc": "invoice"}
+		}
+	case "send_email":
+		payload = map[string]any{"to": "demo@user.com", "template": "welcome"}
+	case "generate_pdf":
+		payload = map[string]any{"doc": "invoice"}
 	}
+
 	j, err := job.New(typ, payload)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
+	}
+	if typ == "always_fail" {
+		j.MaxRetries = 3 // fewer retries so it reaches the DLQ quickly in the demo
 	}
 	if err := s.broker.Enqueue(r.Context(), j); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)

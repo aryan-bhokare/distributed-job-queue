@@ -13,7 +13,9 @@
       <h1>Distributed Job Queue <span>· live</span></h1>
     </div>
     <div class="actions">
-      <button id="enqueue">+ Enqueue job</button>
+      <button id="enqueue">+ Job</button>
+      <button id="flaky" class="ghost">Flaky (retries)</button>
+      <button id="fail" class="ghost">Always-fail (DLQ)</button>
       <button id="burst" class="ghost">Burst ×10</button>
     </div>
   </header>
@@ -21,8 +23,9 @@
   <section class="counters">
     <div class="counter"><span id="c-queued">0</span><label>Queued</label></div>
     <div class="counter"><span id="c-running">0</span><label>Running</label></div>
+    <div class="counter"><span id="c-retrying">0</span><label>Retrying</label></div>
     <div class="counter"><span id="c-done">0</span><label>Done</label></div>
-    <div class="counter"><span id="c-failed">0</span><label>Failed</label></div>
+    <div class="counter"><span id="c-dead">0</span><label>Dead</label></div>
   </section>
 
   <main class="board">
@@ -32,11 +35,14 @@
     <div class="lane" data-state="running">
       <h2>Running</h2><div class="cards" id="lane-running"></div>
     </div>
+    <div class="lane" data-state="retrying">
+      <h2>Retrying</h2><div class="cards" id="lane-retrying"></div>
+    </div>
     <div class="lane" data-state="done">
       <h2>Done</h2><div class="cards" id="lane-done"></div>
     </div>
-    <div class="lane" data-state="failed">
-      <h2>Failed / Skipped</h2><div class="cards" id="lane-failed"></div>
+    <div class="lane" data-state="dead">
+      <h2>Dead / Skipped</h2><div class="cards" id="lane-dead"></div>
     </div>
   </main>
 

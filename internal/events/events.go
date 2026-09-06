@@ -20,8 +20,9 @@ const (
 	Enqueued  = "enqueued"
 	Started   = "started"
 	Succeeded = "succeeded"
-	Failed    = "failed"
-	NoHandler = "no_handler"
+	Retrying  = "retrying"   // failed but will be retried after a backoff delay
+	Dead      = "dead"       // exhausted retries → dead-letter queue
+	NoHandler = "no_handler" // no handler registered for this type
 )
 
 // Event is one job transition. Small and self-describing so the browser can
@@ -35,6 +36,7 @@ type Event struct {
 	Attempt    int       `json:"attempt"`
 	Error      string    `json:"error,omitempty"`
 	DurationMs int64     `json:"duration_ms,omitempty"`
+	RetryInMs  int64     `json:"retry_in_ms,omitempty"` // backoff before the next retry
 	At         time.Time `json:"at"`
 }
 

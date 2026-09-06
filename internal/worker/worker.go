@@ -9,12 +9,19 @@ package worker
 import (
 	"context"
 	"log/slog"
+	"math/rand/v2"
 	"sync"
 	"time"
 
 	"github.com/aryan-bhokare/distributed-job-queue/internal/broker"
 	"github.com/aryan-bhokare/distributed-job-queue/internal/events"
 	"github.com/aryan-bhokare/distributed-job-queue/internal/job"
+)
+
+// Backoff tuning. Small base for a snappy demo; raise base in production.
+const (
+	baseBackoff = 700 * time.Millisecond
+	maxBackoff  = 8 * time.Second
 )
 
 // Handler executes one job. Returning an error means the job failed. Payload is
@@ -162,14 +169,7 @@ func (w *Worker) process(ctx context.Context, d broker.Delivered) {
 	dur := time.Since(start)
 
 	if err != nil {
-		// Phase 1: log and ack to avoid an infinite redelivery loop.
-		// Phase 4 replaces this with retry-with-backoff, then DLQ.
-		log.Error("job failed (acking for now; retries land in Phase 4)", "err", err)
-		ev := base
-		ev.Error = err.Error()
-		ev.DurationMs = dur.Milliseconds()
-		w.emit(ctx, ev, events.Failed)
-		_ = w.broker.Ack(ctx, w.queue, d.EntryID)
+		w.handleFailure(ctx, d, base, err, dur)
 		return
 	}
 
@@ -188,4 +188,58 @@ func (w *Worker) process(ctx context.Context, d broker.Delivered) {
 func (w *Worker) emit(ctx context.Context, e events.Event, kind string) {
 	e.Kind = kind
 	w.pub.Publish(ctx, e)
+}
+
+// handleFailure decides what happens to a job whose handler returned an error:
+// retry it with backoff if attempts remain, otherwise dead-letter it. In both
+// cases we ack the current stream entry — the job's future now lives in the
+// scheduled set (retry) or the DLQ (dead), so leaving it in the PEL would be a
+// duplicate. On a *scheduling/DLQ* failure we deliberately DON'T ack, so the job
+// stays pending and the reaper can recover it.
+func (w *Worker) handleFailure(ctx context.Context, d broker.Delivered, base events.Event, cause error, dur time.Duration) {
+	log := w.log.With("job_id", d.Job.ID, "type", d.Job.Type)
+
+	if d.Job.Attempt < d.Job.MaxRetries {
+		next := d.Job
+		next.Attempt++
+		delay := backoff(next.Attempt)
+		if err := w.broker.Schedule(ctx, next, time.Now().Add(delay)); err != nil {
+			log.Error("could not schedule retry; leaving in PEL for the reaper", "err", err)
+			return
+		}
+		ev := base
+		ev.Attempt = next.Attempt
+		ev.Error = cause.Error()
+		ev.DurationMs = dur.Milliseconds()
+		ev.RetryInMs = delay.Milliseconds()
+		w.emit(ctx, ev, events.Retrying)
+		log.Warn("job failed; retry scheduled", "attempt", next.Attempt, "retry_in", delay.String(), "err", cause)
+		_ = w.broker.Ack(ctx, w.queue, d.EntryID)
+		return
+	}
+
+	// Retries exhausted → dead-letter queue.
+	if err := w.broker.PushDead(ctx, d.Job, cause.Error()); err != nil {
+		log.Error("could not push to DLQ; leaving in PEL for the reaper", "err", err)
+		return
+	}
+	ev := base
+	ev.Error = cause.Error()
+	ev.DurationMs = dur.Milliseconds()
+	w.emit(ctx, ev, events.Dead)
+	log.Error("job dead-lettered (retries exhausted)", "attempts", d.Job.Attempt+1, "err", cause)
+	_ = w.broker.Ack(ctx, w.queue, d.EntryID)
+}
+
+// backoff returns the delay before retry attempt n (n>=1): an exponential base
+// (base * 2^(n-1), capped at maxBackoff) with "equal jitter" — half fixed, half
+// random — so many jobs failing at once retry at spread-out times instead of
+// firing in a synchronized thundering herd.
+func backoff(n int) time.Duration {
+	exp := baseBackoff << (n - 1) // base * 2^(n-1)
+	if exp <= 0 || exp > maxBackoff {
+		exp = maxBackoff // overflow or over-cap → clamp
+	}
+	half := exp / 2
+	return half + time.Duration(rand.Int64N(int64(half)+1))
 }

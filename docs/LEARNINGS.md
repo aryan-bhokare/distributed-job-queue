@@ -95,3 +95,36 @@ current as we go, not at the end.
 **Minor**
 - go-redis's `XReadGroup` with `Block` doesn't abort instantly on ctx-cancel; it can wait out the
   block timeout (I use 2s), so shutdown can lag up to ~2s. Fine; documented.
+
+## Phase 4 — retries + backoff + DLQ (2026-09-06)
+
+**Retry model**
+- On handler error: if `Attempt < MaxRetries`, bump `Attempt`, compute a backoff, and `Schedule`
+  the job in a sorted set (`jobs:scheduled`, score = run-at ms) — then **ack the current entry**.
+  The retry now lives in the scheduled set, so leaving the original in the PEL would double it.
+- At `Attempt == MaxRetries`, `XADD` the job + error to `jobs:dead` (DLQ) and ack. A poison job
+  never blocks the queue or loops forever.
+- Crucial subtlety: if the *scheduling/DLQ write itself* fails, do NOT ack — leave it in the PEL so
+  the reaper (Phase 6) recovers it. Ack only once the job's future is safely stored somewhere.
+
+**Exponential backoff + jitter (why)**
+- `delay = base * 2^(attempt-1)`, capped, with **equal jitter** (half fixed + half random). Without
+  jitter, a batch of jobs that all fail at the same instant would all retry at the same instant —
+  a synchronized "thundering herd" that re-overloads whatever just failed. Jitter spreads them out.
+- Proven live: backoffs grew 517ms → 1.2s → 2.0s across attempts.
+
+**The scheduler + atomic Lua**
+- A poll loop calls a **Lua script** that does `ZRANGEBYSCORE (due) → XADD to jobs:<queue> → ZREM`
+  for each due job, all in one atomic Redis operation. Atomicity matters: a crash mid-move can't
+  half-move a job (moved to stream but not removed from the set = duplicate; removed but not moved
+  = lost). One script = all-or-nothing.
+- Because the move is atomic, running the scheduler inside every worker is safe — each due job is
+  claimed by exactly one scheduler. (In a big deployment you'd run a dedicated scheduler or elect a
+  leader to avoid redundant polling.)
+- `redis.NewScript(...)` in go-redis uses `EVALSHA` with an `EVAL` fallback — the script is cached
+  server-side, so we're not shipping the Lua text every call.
+
+**Go**
+- `math/rand/v2` needs no seeding; `rand.Int64N(n)` returns `[0, n)`.
+- `baseBackoff << (n-1)` shifts a `time.Duration` (an int64) — clean way to do `* 2^(n-1)`; guard
+  against overflow (`exp <= 0`) and clamp to a cap.

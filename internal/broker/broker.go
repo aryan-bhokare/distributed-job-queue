@@ -22,6 +22,15 @@ import (
 // at-least-once delivery (entries stay in the PEL until XACK'd).
 const ConsumerGroup = "workers"
 
+// ScheduledKey is a sorted set of not-yet-ready jobs (delayed jobs + pending
+// retries), scored by run-at time in unix milliseconds. The scheduler moves due
+// members into their stream.
+const ScheduledKey = "jobs:scheduled"
+
+// DeadKey is the dead-letter stream: jobs that exhausted their retries land here
+// (with the last error) instead of looping forever or being lost.
+const DeadKey = "jobs:dead"
+
 // streamKey maps a queue name to its Redis Stream key: "default" -> "jobs:default".
 func streamKey(queue string) string { return "jobs:" + queue }
 
@@ -105,6 +114,56 @@ func (b *Broker) Read(ctx context.Context, queue, consumer string, count int64, 
 // Ack removes an entry from the group's PEL after successful processing.
 func (b *Broker) Ack(ctx context.Context, queue, entryID string) error {
 	return b.rdb.XAck(ctx, streamKey(queue), ConsumerGroup, entryID).Err()
+}
+
+// Schedule places a job in the scheduled set to become ready at runAt. Used for
+// delayed jobs and for retries with backoff.
+func (b *Broker) Schedule(ctx context.Context, j job.Job, runAt time.Time) error {
+	data, err := j.Marshal()
+	if err != nil {
+		return fmt.Errorf("marshal job: %w", err)
+	}
+	return b.rdb.ZAdd(ctx, ScheduledKey, redis.Z{
+		Score:  float64(runAt.UnixMilli()),
+		Member: data,
+	}).Err()
+}
+
+// PushDead sends a job to the dead-letter stream with the error that killed it.
+func (b *Broker) PushDead(ctx context.Context, j job.Job, errMsg string) error {
+	data, err := j.Marshal()
+	if err != nil {
+		return fmt.Errorf("marshal job: %w", err)
+	}
+	return b.rdb.XAdd(ctx, &redis.XAddArgs{
+		Stream: DeadKey,
+		Values: map[string]any{"data": data, "error": errMsg},
+	}).Err()
+}
+
+// moveDueScript atomically moves every due job (score <= now) from the scheduled
+// set into its own stream. Doing the read-move-delete in one Lua script means a
+// crash mid-move can never double-move or lose a job — the whole thing is one
+// atomic Redis operation.
+var moveDueScript = redis.NewScript(`
+local due = redis.call('ZRANGEBYSCORE', KEYS[1], '-inf', ARGV[1], 'LIMIT', 0, tonumber(ARGV[2]))
+for _, member in ipairs(due) do
+  local job = cjson.decode(member)
+  redis.call('XADD', 'jobs:' .. job.queue, '*', 'data', member)
+  redis.call('ZREM', KEYS[1], member)
+end
+return #due
+`)
+
+// MoveDue promotes all jobs whose run-at has passed into their streams, returning
+// how many were moved. Safe to call from multiple schedulers concurrently — the
+// Lua script is atomic, so each due job is moved exactly once.
+func (b *Broker) MoveDue(ctx context.Context, now time.Time, limit int64) (int, error) {
+	n, err := moveDueScript.Run(ctx, b.rdb, []string{ScheduledKey}, now.UnixMilli(), limit).Int()
+	if err != nil {
+		return 0, fmt.Errorf("move due: %w", err)
+	}
+	return n, nil
 }
 
 // Ping verifies Redis is reachable (used by health checks and startup).
