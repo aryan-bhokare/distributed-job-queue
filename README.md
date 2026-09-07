@@ -27,13 +27,26 @@ Building in phases (see [design §13](docs/design.md#13-phased-build-plan-each-p
 - [x] **Phase 4 — Retries + backoff + DLQ**: a failed handler is retried with exponential backoff + jitter (job re-scheduled in a sorted set; a scheduler atomically promotes due jobs via a Lua script); after `max_retries` it's dead-lettered to `jobs:dead`. The dashboard shows *Retrying* and *Dead* lanes.
 - [x] **Phase 5 — Delayed jobs**: a public client (`pkg/jobqueue`) with `Enqueue` / `EnqueueIn(delay, …)`; delayed jobs wait in the scheduled set and the scheduler promotes them when due. Dashboard "Delay 6s" button + `-in` CLI flag.
 - [x] **Phase 6 — Reaper (dead-worker recovery)**: each worker runs a reaper that `XAUTOCLAIM`s entries idle in the PEL past a threshold and reprocesses them — so a job survives a worker being `kill -9`'d mid-execution.
-- [ ] Phase 7 — Interactive demo / happy-path tour (guided controls + narration, incl. a "kill worker" button)
+- [x] **Phase 7 — Interactive demo**: a single `cmd/demo` binary runs the dashboard *and* manages real worker subprocesses the browser can spawn/kill. A **"Kill worker"** button SIGKILLs a real worker so visitors watch the reaper recover its job, and a plain-English **narration feed** explains every event live.
 - [ ] Phase 8 — Observability (Prometheus + Grafana)
 - [ ] Phase 9 — Production infra (Docker, K8s, CI/CD, load test)
 
 ## Quickstart
 
 Requires Go 1.26+ and Docker.
+
+### One command (interactive demo — recommended)
+
+```bash
+docker compose up -d           # Redis (set REDIS_PORT=6380 if 6379 is taken)
+go run ./cmd/demo              # dashboard + 2 managed workers → http://localhost:8080
+```
+
+Open the dashboard and try: **+ Job**, **Slow (6s)**, **Delay 6s**, **Flaky**, **Always-fail**,
+**Burst ×10** — and the headline: enqueue a couple of **Slow** jobs, then **💀 Kill worker** and
+watch the reaper reclaim its in-flight job (narrated live in the activity feed).
+
+### Or run the pieces separately
 
 ```bash
 # 1. Start Redis (uses host port 6379; set REDIS_PORT to avoid a clash)
@@ -72,12 +85,14 @@ window), then exits — no dropped or double-acked work.
 
 ```
 cmd/worker      # runs a worker
-cmd/enqueue     # CLI to enqueue a job
+cmd/enqueue     # CLI to enqueue a job (supports -in DURATION for delayed)
 cmd/dashboard   # runs the live dashboard (SSE + control API + embedded UI)
+cmd/demo        # dashboard + managed worker subprocesses (spawn/kill from the UI)
 internal/job    # Job envelope + ULID
 internal/broker # Redis Streams ops (XADD / XREADGROUP / XACK) + scheduled set + DLQ + Lua move
 internal/worker # consume → handle → ack loop, handler registry, retry/backoff/DLQ
 internal/scheduler # promotes due delayed/retry jobs into their streams (atomic Lua)
+internal/demo   # sample job handlers (send_email, generate_pdf, flaky, always_fail, slow)
 internal/events # event bus: publish/subscribe job transitions (Redis Pub/Sub)
 internal/dashboard # SSE hub + control handlers
 pkg/jobqueue    # public client: Enqueue / EnqueueIn (what producers import)

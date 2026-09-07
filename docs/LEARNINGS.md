@@ -157,3 +157,23 @@ current as we go, not at the end.
   `sync.WaitGroup` that `Run` waits on before closing.
 - Because `XAUTOCLAIM` is atomic, running a reaper in every worker is safe — a stranded entry is
   claimed by exactly one.
+
+## Phase 7 — interactive demo (2026-09-07)
+
+- **Killing a real worker, honestly.** To let the browser "kill a worker" without faking it, one
+  `cmd/demo` binary runs the dashboard AND spawns worker **subprocesses** by re-exec'ing itself
+  (`os.Executable()` + `exec.Command` with `DJQ_ROLE=worker`). The kill button does
+  `cmd.Process.Kill()` (SIGKILL) — a genuine hard crash, so the job is really stranded and the
+  reaper really recovers it. Nothing scripted.
+- **Decoupling the dashboard from process management.** The dashboard doesn't know how to spawn
+  processes — it exposes `SetWorkerControls(add, kill, count)` hooks (func values). `cmd/demo`
+  injects the real implementations. So `cmd/dashboard` (no process mgmt) still works; the buttons
+  just report "controls off" (the endpoints return 501 and the UI disables them).
+- **`exec.Command` hygiene:** always `cmd.Wait()` in a goroutine after `Start()` or you leak
+  zombies; kill children on parent shutdown (`defer mgr.killAll()`); children inherit env
+  (`os.Environ()`) so `REDIS_ADDR` flows through.
+- **Narration is client-side.** The browser already receives every event over SSE, so translating
+  them into plain-English sentences ("♻️ worker-2 reclaimed a stranded job…") is just a `switch`
+  in JS — no extra server work. Same events, two renderings (the board + the feed).
+- **New event `reclaimed`** is emitted by the reaper purely so the UI can narrate recovery; the job
+  then flows through the normal started→done events, so its card visibly hops to the new worker.

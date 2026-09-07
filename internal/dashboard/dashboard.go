@@ -42,9 +42,15 @@ type jobView struct {
 
 type Server struct {
 	rdb    *redis.Client
-	broker *broker.Broker      // for health checks
-	client *jobqueue.Client    // for the enqueue control endpoint
+	broker *broker.Broker   // for health checks
+	client *jobqueue.Client // for the enqueue control endpoint
 	log    *slog.Logger
+
+	// Optional worker-process controls, wired by cmd/demo so the browser can
+	// spawn/kill real worker processes (for the reaper demo). Nil = disabled.
+	addWorker   func() (string, error)
+	killWorker  func() (string, error)
+	workerCount func() int
 
 	mu      sync.Mutex
 	clients map[chan []byte]struct{} // one channel per connected browser
@@ -70,6 +76,9 @@ func (s *Server) Run(ctx context.Context, addr string) error {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /events", s.handleSSE)
 	mux.HandleFunc("POST /api/enqueue", s.handleEnqueue)
+	mux.HandleFunc("POST /api/worker/add", s.handleAddWorker)
+	mux.HandleFunc("POST /api/worker/kill", s.handleKillWorker)
+	mux.HandleFunc("GET /api/workers", s.handleWorkers)
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("ok")) })
 	mux.HandleFunc("GET /readyz", s.handleReady)
 	mux.Handle("GET /", http.FileServerFS(web.FS)) // "/" -> index.html, plus app.js/styles.css
@@ -129,6 +138,9 @@ func (s *Server) apply(e events.Event) {
 		v.State, v.Error, v.DurationMs, v.RetryInMs = "retrying", e.Error, e.DurationMs, e.RetryInMs
 	case events.Dead:
 		v.State, v.Error, v.DurationMs = "dead", e.Error, e.DurationMs
+	case events.Reclaimed:
+		// Recovered from a crashed worker; it's about to be reprocessed here.
+		v.State, v.Worker = "running", e.Worker
 	case events.NoHandler:
 		v.State = "skipped"
 	}
@@ -213,7 +225,7 @@ func (s *Server) handleEnqueue(w http.ResponseWriter, r *http.Request) {
 		}
 	case "send_email":
 		payload = map[string]any{"to": "demo@user.com", "template": "welcome"}
-	case "generate_pdf":
+	case "generate_pdf", "slow":
 		payload = map[string]any{"doc": "invoice"}
 	}
 
@@ -245,4 +257,50 @@ func (s *Server) handleReady(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	_, _ = w.Write([]byte("ready"))
+}
+
+// SetWorkerControls wires functions that spawn / kill / count real worker
+// processes so the dashboard can offer "Add worker" and "Kill worker" (cmd/demo).
+func (s *Server) SetWorkerControls(add, kill func() (string, error), count func() int) {
+	s.addWorker, s.killWorker, s.workerCount = add, kill, count
+}
+
+func (s *Server) handleWorkers(w http.ResponseWriter, _ *http.Request) {
+	enabled := s.workerCount != nil
+	n := 0
+	if enabled {
+		n = s.workerCount()
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{"count": n, "enabled": enabled})
+}
+
+func (s *Server) handleAddWorker(w http.ResponseWriter, _ *http.Request) {
+	if s.addWorker == nil {
+		http.Error(w, "worker controls not enabled (run cmd/demo)", http.StatusNotImplemented)
+		return
+	}
+	name, err := s.addWorker()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	s.log.Info("spawned worker", "worker", name)
+	w.WriteHeader(http.StatusAccepted)
+	_ = json.NewEncoder(w).Encode(map[string]string{"worker": name, "action": "added"})
+}
+
+func (s *Server) handleKillWorker(w http.ResponseWriter, _ *http.Request) {
+	if s.killWorker == nil {
+		http.Error(w, "worker controls not enabled (run cmd/demo)", http.StatusNotImplemented)
+		return
+	}
+	name, err := s.killWorker()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusConflict)
+		return
+	}
+	s.log.Warn("killed worker (SIGKILL)", "worker", name)
+	w.WriteHeader(http.StatusAccepted)
+	_ = json.NewEncoder(w).Encode(map[string]string{"worker": name, "action": "killed"})
 }

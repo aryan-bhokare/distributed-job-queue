@@ -22,6 +22,7 @@ const (
 	Succeeded = "succeeded"
 	Retrying  = "retrying"   // failed but will be retried after a backoff delay
 	Dead      = "dead"       // exhausted retries → dead-letter queue
+	Reclaimed = "reclaimed"  // recovered from a crashed worker's PEL by the reaper
 	NoHandler = "no_handler" // no handler registered for this type
 )
 

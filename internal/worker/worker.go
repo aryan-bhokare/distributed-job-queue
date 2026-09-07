@@ -190,6 +190,8 @@ func (w *Worker) reap(ctx context.Context, jobs chan<- broker.Delivered) {
 			}
 			for _, d := range claimed {
 				w.log.Warn("♻️  reclaimed stranded job from the PEL", "job_id", d.Job.ID, "type", d.Job.Type)
+				w.emit(ctx, events.Event{JobID: d.Job.ID, JobType: d.Job.Type, Queue: d.Job.Queue,
+					Worker: w.name, Attempt: d.Job.Attempt}, events.Reclaimed)
 				select {
 				case jobs <- d:
 				case <-ctx.Done():

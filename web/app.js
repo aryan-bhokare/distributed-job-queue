@@ -16,7 +16,7 @@ const lanes = {
 // A live job event's `kind` maps to the UI state.
 const STATE_FROM_KIND = {
   enqueued: "queued", started: "running", succeeded: "done",
-  retrying: "retrying", dead: "dead", no_handler: "skipped",
+  retrying: "retrying", dead: "dead", reclaimed: "running", no_handler: "skipped",
 };
 
 const jobs = new Map(); // job id -> { el, state }
@@ -79,17 +79,64 @@ const viewFromEvent = (ev) => ({
   duration_ms: ev.duration_ms, retry_in_ms: ev.retry_in_ms, error: ev.error,
 });
 
+// --- narration feed ---------------------------------------------------------
+const feed = $("feed");
+function feedLine(html) {
+  const li = document.createElement("li");
+  li.innerHTML = `<span class="t">${new Date().toLocaleTimeString()}</span>${html}`;
+  feed.prepend(li);
+  while (feed.children.length > 40) feed.removeChild(feed.lastChild);
+}
+function narrate(ev) {
+  const id = ev.job_id ? "#" + ev.job_id.slice(-6) : "";
+  const t = esc(ev.job_type || "job");
+  switch (ev.kind) {
+    case "enqueued":
+      feedLine(ev.retry_in_ms
+        ? `enqueued <b>${t}</b> ${id} — scheduled in ${(ev.retry_in_ms / 1000).toFixed(0)}s`
+        : `enqueued <b>${t}</b> ${id}`); break;
+    case "started":   feedLine(`<b>${esc(ev.worker)}</b> started ${t} ${id}`); break;
+    case "succeeded": feedLine(`${t} ${id} ✅ done in ${ev.duration_ms}ms`); break;
+    case "retrying":  feedLine(`${t} ${id} failed — retrying in ${(ev.retry_in_ms / 1000).toFixed(1)}s (attempt ${ev.attempt + 1})`); break;
+    case "dead":      feedLine(`☠️ ${t} ${id} dead-lettered after exhausting retries`); break;
+    case "reclaimed": feedLine(`♻️ <b>${esc(ev.worker)}</b> reclaimed stranded ${t} ${id} — recovering a crashed worker's job`); break;
+    case "no_handler": feedLine(`no handler for ${t} ${id} — skipped`); break;
+  }
+}
+
 // --- SSE wiring -------------------------------------------------------------
 const es = new EventSource("/events");
 es.addEventListener("snapshot", (e) => (JSON.parse(e.data) || []).forEach(render));
-es.onmessage = (e) => render(viewFromEvent(JSON.parse(e.data)));
+es.onmessage = (e) => { const ev = JSON.parse(e.data); render(viewFromEvent(ev)); narrate(ev); };
 es.onopen  = () => ($("conn").className = "dot ok");
 es.onerror = () => ($("conn").className = "dot bad"); // EventSource auto-reconnects
 
-// --- controls ---------------------------------------------------------------
+// --- job controls -----------------------------------------------------------
 const post = (qs) => fetch("/api/enqueue" + (qs ? "?" + qs : ""), { method: "POST" });
 $("enqueue").onclick = () => post("");
+$("slow").onclick    = () => post("type=slow");
 $("delay").onclick   = () => post("delay=6s");
 $("flaky").onclick   = () => post("type=flaky");
 $("fail").onclick    = () => post("type=always_fail");
 $("burst").onclick   = () => { for (let i = 0; i < 10; i++) post(""); };
+
+// --- worker controls (enabled only under cmd/demo) --------------------------
+async function refreshWorkers() {
+  try {
+    const { count, enabled } = await (await fetch("/api/workers")).json();
+    $("wcount").textContent = enabled ? `${count} worker${count === 1 ? "" : "s"}` : "controls off";
+    $("addw").disabled = !enabled;
+    $("killw").disabled = !enabled;
+  } catch { /* ignore */ }
+}
+$("addw").onclick = async () => {
+  const r = await fetch("/api/worker/add", { method: "POST" });
+  if (r.ok) feedLine(`＋ spawned <b>${(await r.json()).worker}</b>`);
+  refreshWorkers();
+};
+$("killw").onclick = async () => {
+  const r = await fetch("/api/worker/kill", { method: "POST" });
+  if (r.ok) feedLine(`💀 killed <b>${(await r.json()).worker}</b> (SIGKILL) — its in-flight jobs are now stranded in the PEL`);
+  refreshWorkers();
+};
+refreshWorkers();
