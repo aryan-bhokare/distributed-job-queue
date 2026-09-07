@@ -50,5 +50,35 @@ services:
     depends_on:
       - prometheus
 
+  # Fully containerized app — no Go on the host:
+  #   docker compose --profile full up --build
+  # (add --profile obs too for Prometheus/Grafana). Scale workers with
+  #   docker compose --profile full up --build --scale worker=4
+  dashboard:
+    build: .
+    profiles: ["full"]
+    environment:
+      - REDIS_ADDR=redis:6379
+    ports:
+      - "8080:8080"
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  worker:
+    build: .
+    profiles: ["full"]
+    # Override ENTRYPOINT (not command) — command would just append an arg to the
+    # dashboard entrypoint. entrypoint replaces the binary that runs.
+    entrypoint: ["/usr/local/bin/worker"]
+    environment:
+      - REDIS_ADDR=redis:6379
+      - WORKER_CONCURRENCY=5
+    depends_on:
+      redis:
+        condition: service_healthy
+    deploy:
+      replicas: 2
+
 volumes:
   redis-data:

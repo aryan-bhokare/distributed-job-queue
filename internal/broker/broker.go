@@ -52,6 +52,11 @@ func (b *Broker) Enqueue(ctx context.Context, j job.Job) error {
 	return b.rdb.XAdd(ctx, &redis.XAddArgs{
 		Stream: streamKey(j.Queue),
 		Values: map[string]any{"data": data},
+		// Cap the stream so acked-but-retained entries don't grow unbounded.
+		// Approx (~) lets Redis trim efficiently in whole macro-nodes. The cap is
+		// far above any realistic in-flight count, so pending entries aren't trimmed.
+		MaxLen: 100_000,
+		Approx: true,
 	}).Err()
 }
 
@@ -221,6 +226,34 @@ func (b *Broker) PendingLen(ctx context.Context, queue string) (int64, error) {
 		return 0, err
 	}
 	return res.Count, nil
+}
+
+// Redrive moves up to `limit` jobs out of the dead-letter queue back onto their
+// queue with a fresh retry budget (Attempt reset). Operators use this after
+// fixing whatever made the jobs fail. Returns how many were re-driven.
+func (b *Broker) Redrive(ctx context.Context, limit int64) (int, error) {
+	msgs, err := b.rdb.XRangeN(ctx, DeadKey, "-", "+", limit).Result()
+	if err != nil {
+		return 0, fmt.Errorf("read dlq: %w", err)
+	}
+	n := 0
+	for _, m := range msgs {
+		raw, _ := m.Values["data"].(string)
+		j, jerr := job.Unmarshal([]byte(raw))
+		if jerr != nil {
+			_ = b.rdb.XDel(ctx, DeadKey, m.ID).Err() // drop unparseable entry
+			continue
+		}
+		j.Attempt = 0 // give it a fresh set of retries
+		if err := b.Enqueue(ctx, j); err != nil {
+			return n, err
+		}
+		if err := b.rdb.XDel(ctx, DeadKey, m.ID).Err(); err != nil {
+			return n, err
+		}
+		n++
+	}
+	return n, nil
 }
 
 // Ping verifies Redis is reachable (used by health checks and startup).

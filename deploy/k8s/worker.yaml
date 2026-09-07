@@ -1,0 +1,47 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: worker
+  labels: { app: worker }
+spec:
+  replicas: 3
+  selector: { matchLabels: { app: worker } }
+  template:
+    metadata: { labels: { app: worker } }
+    spec:
+      containers:
+        - name: worker
+          image: distributed-job-queue:latest
+          imagePullPolicy: IfNotPresent
+          # In k8s `command` OVERRIDES the image ENTRYPOINT (unlike docker-compose
+          # `command`, which only appends args). So this runs the worker binary.
+          command: ["/usr/local/bin/worker"]
+          env:
+            - { name: REDIS_ADDR, value: "redis:6379" }
+            - { name: WORKER_CONCURRENCY, value: "5" }
+            # WORKER_NAME defaults to the hostname (the pod name), so every replica
+            # gets a unique consumer name in the group — no collisions when scaling.
+          resources:
+            requests: { cpu: 100m, memory: 64Mi }
+            limits: { memory: 256Mi }
+      terminationGracePeriodSeconds: 30 # matches the worker's in-flight drain window
+---
+# Autoscale workers on CPU. Requires metrics-server in the cluster.
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: worker
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: worker
+  minReplicas: 2
+  maxReplicas: 10
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70

@@ -119,6 +119,10 @@ $("delay").onclick   = () => post("delay=6s");
 $("flaky").onclick   = () => post("type=flaky");
 $("fail").onclick    = () => post("type=always_fail");
 $("burst").onclick   = () => { for (let i = 0; i < 10; i++) post(""); };
+$("redrive").onclick = async () => {
+  const r = await fetch("/api/dlq/redrive", { method: "POST" });
+  if (r.ok) feedLine(`↩️ re-drove <b>${(await r.json()).redriven}</b> dead job(s) back to the queue`);
+};
 
 // --- worker controls (enabled only under cmd/demo) --------------------------
 async function refreshWorkers() {

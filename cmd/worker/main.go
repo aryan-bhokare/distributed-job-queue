@@ -29,7 +29,7 @@ func main() {
 
 	b := broker.New(rdb)
 	pub := events.NewPublisher(rdb)
-	w := worker.New(envOr("WORKER_NAME", "worker-1"), job.DefaultQueue, b, pub)
+	w := worker.New(workerName(), job.DefaultQueue, b, pub)
 	demo.Register(w)
 
 	if n, err := strconv.Atoi(os.Getenv("WORKER_CONCURRENCY")); err == nil {
@@ -59,4 +59,16 @@ func envOr(k, def string) string {
 		return v
 	}
 	return def
+}
+
+// workerName gives each worker a unique consumer name in the group. Defaults to
+// the hostname (unique per container/replica) so scaling doesn't collide.
+func workerName() string {
+	if v := os.Getenv("WORKER_NAME"); v != "" {
+		return v
+	}
+	if h, err := os.Hostname(); err == nil && h != "" {
+		return "worker-" + h
+	}
+	return "worker-1"
 }

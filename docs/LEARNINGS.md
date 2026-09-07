@@ -199,3 +199,31 @@ current as we go, not at the end.
   YAML pointing at a folder of dashboard JSON → the dashboard appears automatically, no clicking.
   Anonymous admin (`GF_AUTH_*`) makes it a zero-friction demo.
 - Verified: Prometheus target `up`, `sum(jobs_processed_total)` queryable, Grafana healthy.
+
+## Phase 9 — production infra (2026-09-07)
+
+- **Multi-stage + distroless.** Build in `golang:1.26`, copy the static binaries into
+  `gcr.io/distroless/static` (no shell, no libc, non-root). `CGO_ENABLED=0` + `-ldflags="-s -w"`
+  gives a self-contained 45MB image. Cache `go mod download` in its own layer (copy go.mod/go.sum
+  before the source) so code changes don't re-download deps.
+- **THE gotcha: `command` means different things in Compose vs K8s.**
+  - docker-compose `command:` → sets **CMD** (args *appended* to ENTRYPOINT). So `command: [worker]`
+    on an image whose ENTRYPOINT is `dashboard` runs `dashboard worker` → still the dashboard! Fix:
+    use compose `entrypoint:` to replace the binary.
+  - Kubernetes `command:` → **overrides ENTRYPOINT** (and `args:` overrides CMD). So `command:
+    [worker]` in k8s correctly runs the worker. Same word, opposite behavior — caught it live when
+    the "worker" containers all logged "dashboard listening".
+- **Unique consumer names when scaling.** Every worker replica must have a distinct consumer name
+  in the group (else two processes share one PEL). Defaulting `WORKER_NAME` to the hostname — the
+  container/pod name — makes each replica unique for free.
+- **`MAXLEN ~` on XADD** caps the stream so acked-but-retained entries don't grow forever; `~`
+  (approx) lets Redis trim whole macro-nodes cheaply. Cap is far above realistic in-flight, so
+  pending entries aren't trimmed.
+- **HPA needs resource requests + metrics-server.** The autoscaler reads CPU as a % of the pod's
+  `requests.cpu`, so requests are mandatory for `averageUtilization` to mean anything.
+- **Graceful shutdown ties to k8s.** `terminationGracePeriodSeconds` should be ≥ the worker's
+  in-flight drain window, so k8s doesn't SIGKILL a pod mid-drain on rollout.
+- **Load test result:** ~15,500 enqueues/sec from 8 concurrent producers against one Redis
+  (`go run ./cmd/loadtest -n 20000 -p 8`).
+- **DLQ re-drive:** `XRANGE` the dead stream, reset `Attempt`, `Enqueue`, `XDEL` — operators
+  recover dead jobs after fixing the cause; keeping the same job ID means the dashboard card revives.

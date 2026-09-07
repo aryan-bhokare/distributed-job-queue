@@ -83,6 +83,7 @@ func (s *Server) Run(ctx context.Context, addr string) error {
 	mux.HandleFunc("POST /api/worker/add", s.handleAddWorker)
 	mux.HandleFunc("POST /api/worker/kill", s.handleKillWorker)
 	mux.HandleFunc("GET /api/workers", s.handleWorkers)
+	mux.HandleFunc("POST /api/dlq/redrive", s.handleRedrive)
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("ok")) })
 	mux.HandleFunc("GET /readyz", s.handleReady)
 	mux.Handle("GET /", http.FileServerFS(web.FS)) // "/" -> index.html, plus app.js/styles.css
@@ -279,6 +280,17 @@ func (s *Server) handleEnqueue(w http.ResponseWriter, r *http.Request) {
 	}
 	w.WriteHeader(http.StatusAccepted)
 	_ = json.NewEncoder(w).Encode(map[string]string{"id": j.ID, "type": j.Type})
+}
+
+func (s *Server) handleRedrive(w http.ResponseWriter, r *http.Request) {
+	n, err := s.broker.Redrive(r.Context(), 100)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	s.log.Info("re-drove DLQ jobs", "count", n)
+	w.WriteHeader(http.StatusAccepted)
+	_ = json.NewEncoder(w).Encode(map[string]int{"redriven": n})
 }
 
 func (s *Server) handleReady(w http.ResponseWriter, r *http.Request) {

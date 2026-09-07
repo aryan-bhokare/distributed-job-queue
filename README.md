@@ -29,7 +29,9 @@ Building in phases (see [design §13](docs/design.md#13-phased-build-plan-each-p
 - [x] **Phase 6 — Reaper (dead-worker recovery)**: each worker runs a reaper that `XAUTOCLAIM`s entries idle in the PEL past a threshold and reprocesses them — so a job survives a worker being `kill -9`'d mid-execution.
 - [x] **Phase 7 — Interactive demo**: a single `cmd/demo` binary runs the dashboard *and* manages real worker subprocesses the browser can spawn/kill. A **"Kill worker"** button SIGKILLs a real worker so visitors watch the reaper recover its job, and a plain-English **narration feed** explains every event live.
 - [x] **Phase 8 — Observability**: the dashboard folds every event into Prometheus metrics (throughput, `job_duration_seconds` histogram, retries, reclaims) and polls Redis for gauges (queue depth, in-flight, scheduled, DLQ size), exposed at `/metrics`. A `docker compose --profile obs up` brings up Prometheus + a provisioned Grafana dashboard.
-- [ ] Phase 9 — Production infra (Docker image, containerized stack, K8s, CI/CD, load test)
+- [x] **Phase 9 — Production infra**: multi-stage **distroless** image (45MB, non-root); fully containerized compose stack (`--profile full`, scalable workers); **Kubernetes** manifests (Deployments, Service, HPA, probes); **GitHub Actions** CI (vet → lint → race tests → build → docker); a **load test** (`cmd/loadtest`, ~15k enqueues/sec); stream `MAXLEN` capping; and a **DLQ re-drive** (button + API).
+
+**All 9 phases complete.** Every reliability guarantee is proven and demoable.
 
 ## Quickstart
 
@@ -92,6 +94,25 @@ WORKER_NAME=worker-B go run ./cmd/worker &                     # the group load-
 On `Ctrl-C`/SIGTERM a worker stops fetching, lets in-flight jobs finish and ack (within a grace
 window), then exits — no dropped or double-acked work.
 
+## Deploy
+
+```bash
+# Fully containerized (no Go on host), scale workers:
+docker compose --profile full up --build --scale worker=4
+
+# Build the image directly:
+docker build -t distributed-job-queue .          # 45MB distroless, non-root
+
+# Kubernetes (any cluster — kind/minikube/cloud); worker HPA scales 2→10 on CPU:
+kubectl apply -f deploy/k8s/
+
+# Load test enqueue throughput:
+go run ./cmd/loadtest -n 20000 -p 8              # ~15k jobs/sec on one Redis
+```
+
+CI runs on every push/PR (`.github/workflows/ci.yml`): vet → golangci-lint → race tests → build →
+docker build.
+
 ## Layout
 
 ```
@@ -99,6 +120,10 @@ cmd/worker      # runs a worker
 cmd/enqueue     # CLI to enqueue a job (supports -in DURATION for delayed)
 cmd/dashboard   # runs the live dashboard (SSE + control API + embedded UI)
 cmd/demo        # dashboard + managed worker subprocesses (spawn/kill from the UI)
+cmd/loadtest    # concurrent enqueue load generator (throughput benchmark)
+Dockerfile      # multi-stage → distroless static image (worker/dashboard/enqueue)
+deploy/k8s      # Kubernetes manifests (Deployments, Service, worker HPA, probes)
+.github/workflows # CI: vet → lint → race tests → build → docker build
 internal/job    # Job envelope + ULID
 internal/broker # Redis Streams ops (XADD / XREADGROUP / XACK) + scheduled set + DLQ + Lua move
 internal/worker # consume → handle → ack loop, handler registry, retry/backoff/DLQ
