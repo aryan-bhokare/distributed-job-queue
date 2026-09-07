@@ -1,0 +1,9 @@
+global:
+  scrape_interval: 5s
+
+scrape_configs:
+  # The dashboard exposes aggregated queue metrics at /metrics. It runs on the
+  # host (go run ./cmd/demo), so Prometheus in a container scrapes the host.
+  - job_name: jobqueue
+    static_configs:
+      - targets: ["host.docker.internal:8080"]

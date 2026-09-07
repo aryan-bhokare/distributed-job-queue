@@ -3,8 +3,7 @@
 > Single source of truth for "where we are." Update at the end of every work chunk so any fresh
 > session can resume from here.
 
-**Status:** ✅ Phases 1–7 complete and proven. Next: Phase 8 (observability), then Phase 9
-(production infra).
+**Status:** ✅ Phases 1–8 complete and proven. Next: Phase 9 (production infra).
 
 ## Done (all verified end-to-end)
 - Public repo: https://github.com/aryan-bhokare/distributed-job-queue

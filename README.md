@@ -28,8 +28,8 @@ Building in phases (see [design §13](docs/design.md#13-phased-build-plan-each-p
 - [x] **Phase 5 — Delayed jobs**: a public client (`pkg/jobqueue`) with `Enqueue` / `EnqueueIn(delay, …)`; delayed jobs wait in the scheduled set and the scheduler promotes them when due. Dashboard "Delay 6s" button + `-in` CLI flag.
 - [x] **Phase 6 — Reaper (dead-worker recovery)**: each worker runs a reaper that `XAUTOCLAIM`s entries idle in the PEL past a threshold and reprocesses them — so a job survives a worker being `kill -9`'d mid-execution.
 - [x] **Phase 7 — Interactive demo**: a single `cmd/demo` binary runs the dashboard *and* manages real worker subprocesses the browser can spawn/kill. A **"Kill worker"** button SIGKILLs a real worker so visitors watch the reaper recover its job, and a plain-English **narration feed** explains every event live.
-- [ ] Phase 8 — Observability (Prometheus + Grafana)
-- [ ] Phase 9 — Production infra (Docker, K8s, CI/CD, load test)
+- [x] **Phase 8 — Observability**: the dashboard folds every event into Prometheus metrics (throughput, `job_duration_seconds` histogram, retries, reclaims) and polls Redis for gauges (queue depth, in-flight, scheduled, DLQ size), exposed at `/metrics`. A `docker compose --profile obs up` brings up Prometheus + a provisioned Grafana dashboard.
+- [ ] Phase 9 — Production infra (Docker image, containerized stack, K8s, CI/CD, load test)
 
 ## Quickstart
 
@@ -45,6 +45,17 @@ go run ./cmd/demo              # dashboard + 2 managed workers → http://localh
 Open the dashboard and try: **+ Job**, **Slow (6s)**, **Delay 6s**, **Flaky**, **Always-fail**,
 **Burst ×10** — and the headline: enqueue a couple of **Slow** jobs, then **💀 Kill worker** and
 watch the reaper reclaim its in-flight job (narrated live in the activity feed).
+
+### Observability (Prometheus + Grafana)
+
+```bash
+docker compose --profile obs up -d      # Prometheus :9090, Grafana :3000
+go run ./cmd/demo                        # exposes /metrics; generate some jobs
+```
+
+Open **Grafana → http://localhost:3000** (anonymous admin) for the pre-provisioned "Distributed
+Job Queue" dashboard: throughput by outcome, p50/p95 latency, queue depth / in-flight / scheduled,
+retries/sec, DLQ size, and jobs recovered by the reaper.
 
 ### Or run the pieces separately
 
@@ -93,6 +104,7 @@ internal/broker # Redis Streams ops (XADD / XREADGROUP / XACK) + scheduled set +
 internal/worker # consume → handle → ack loop, handler registry, retry/backoff/DLQ
 internal/scheduler # promotes due delayed/retry jobs into their streams (atomic Lua)
 internal/demo   # sample job handlers (send_email, generate_pdf, flaky, always_fail, slow)
+internal/metrics # Prometheus collectors, fed by the event stream + Redis polling
 internal/events # event bus: publish/subscribe job transitions (Redis Pub/Sub)
 internal/dashboard # SSE hub + control handlers
 pkg/jobqueue    # public client: Enqueue / EnqueueIn (what producers import)

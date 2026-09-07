@@ -201,5 +201,27 @@ func (b *Broker) Reap(ctx context.Context, queue, consumer string, minIdle time.
 	return out, nil
 }
 
+// QueueLen is the number of entries retained in a queue's stream (ready + already
+// processed-but-not-trimmed). ScheduledLen and DeadLen size the scheduled set and
+// the DLQ. These back the observability gauges.
+func (b *Broker) QueueLen(ctx context.Context, queue string) (int64, error) {
+	return b.rdb.XLen(ctx, streamKey(queue)).Result()
+}
+func (b *Broker) ScheduledLen(ctx context.Context) (int64, error) {
+	return b.rdb.ZCard(ctx, ScheduledKey).Result()
+}
+func (b *Broker) DeadLen(ctx context.Context) (int64, error) {
+	return b.rdb.XLen(ctx, DeadKey).Result()
+}
+
+// PendingLen is the size of the group's Pending Entries List (in-flight jobs).
+func (b *Broker) PendingLen(ctx context.Context, queue string) (int64, error) {
+	res, err := b.rdb.XPending(ctx, streamKey(queue), ConsumerGroup).Result()
+	if err != nil {
+		return 0, err
+	}
+	return res.Count, nil
+}
+
 // Ping verifies Redis is reachable (used by health checks and startup).
 func (b *Broker) Ping(ctx context.Context) error { return b.rdb.Ping(ctx).Err() }

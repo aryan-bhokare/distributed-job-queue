@@ -1,0 +1,78 @@
+{
+  "title": "Distributed Job Queue",
+  "uid": "jobqueue",
+  "schemaVersion": 39,
+  "editable": true,
+  "time": { "from": "now-15m", "to": "now" },
+  "refresh": "5s",
+  "panels": [
+    {
+      "id": 1,
+      "title": "Throughput (jobs/sec by outcome)",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+      "targets": [
+        { "expr": "sum by (status) (rate(jobs_processed_total[1m]))", "legendFormat": "{{status}}", "refId": "A" }
+      ]
+    },
+    {
+      "id": 2,
+      "title": "p95 handler latency (s)",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+      "targets": [
+        { "expr": "histogram_quantile(0.95, sum by (le) (rate(job_duration_seconds_bucket[5m])))", "legendFormat": "p95", "refId": "A" },
+        { "expr": "histogram_quantile(0.50, sum by (le) (rate(job_duration_seconds_bucket[5m])))", "legendFormat": "p50", "refId": "B" }
+      ]
+    },
+    {
+      "id": 3,
+      "title": "Queue depth / in-flight / scheduled",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
+      "targets": [
+        { "expr": "queue_depth", "legendFormat": "queue_depth", "refId": "A" },
+        { "expr": "jobs_in_flight", "legendFormat": "in_flight", "refId": "B" },
+        { "expr": "scheduled_depth", "legendFormat": "scheduled", "refId": "C" }
+      ]
+    },
+    {
+      "id": 4,
+      "title": "Retries/sec",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
+      "targets": [
+        { "expr": "rate(jobs_retried_total[1m])", "legendFormat": "retries", "refId": "A" }
+      ]
+    },
+    {
+      "id": 5,
+      "title": "Dead-letter queue size",
+      "type": "stat",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 6, "w": 8, "x": 0, "y": 16 },
+      "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "thresholds": { "steps": [ { "color": "green", "value": null }, { "color": "red", "value": 1 } ] } } },
+      "targets": [ { "expr": "dlq_size", "refId": "A" } ]
+    },
+    {
+      "id": 6,
+      "title": "Jobs recovered by the reaper",
+      "type": "stat",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 6, "w": 8, "x": 8, "y": 16 },
+      "targets": [ { "expr": "jobs_reclaimed_total", "refId": "A" } ]
+    },
+    {
+      "id": 7,
+      "title": "Enqueued/sec by type",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 6, "w": 8, "x": 16, "y": 16 },
+      "targets": [ { "expr": "sum by (type) (rate(jobs_enqueued_total[1m]))", "legendFormat": "{{type}}", "refId": "A" } ]
+    }
+  ]
+}

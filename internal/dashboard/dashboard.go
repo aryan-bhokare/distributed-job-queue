@@ -16,11 +16,13 @@ import (
 	"sync"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/redis/go-redis/v9"
 
 	"github.com/aryan-bhokare/distributed-job-queue/internal/broker"
 	"github.com/aryan-bhokare/distributed-job-queue/internal/events"
 	"github.com/aryan-bhokare/distributed-job-queue/internal/job"
+	"github.com/aryan-bhokare/distributed-job-queue/internal/metrics"
 	"github.com/aryan-bhokare/distributed-job-queue/pkg/jobqueue"
 	"github.com/aryan-bhokare/distributed-job-queue/web"
 )
@@ -71,9 +73,11 @@ func NewServer(rdb *redis.Client) *Server {
 
 // Run starts the event pump and serves HTTP until ctx is cancelled.
 func (s *Server) Run(ctx context.Context, addr string) error {
-	go s.pump(ctx) // bus -> state + broadcast
+	go s.pump(ctx)      // bus -> state + broadcast + metrics
+	go s.pollStats(ctx) // redis -> gauges
 
 	mux := http.NewServeMux()
+	mux.Handle("GET /metrics", promhttp.Handler())
 	mux.HandleFunc("GET /events", s.handleSSE)
 	mux.HandleFunc("POST /api/enqueue", s.handleEnqueue)
 	mux.HandleFunc("POST /api/worker/add", s.handleAddWorker)
@@ -98,8 +102,34 @@ func (s *Server) Run(ctx context.Context, addr string) error {
 func (s *Server) pump(ctx context.Context) {
 	for e := range events.Subscribe(ctx, s.rdb) {
 		s.apply(e)
+		metrics.Record(e) // fold the event into Prometheus counters/histograms
 		if data, err := json.Marshal(e); err == nil {
 			s.broadcast(data)
+		}
+	}
+}
+
+// pollStats refreshes the gauge metrics from Redis on an interval.
+func (s *Server) pollStats(ctx context.Context) {
+	t := time.NewTicker(2 * time.Second)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			if n, err := s.broker.QueueLen(ctx, job.DefaultQueue); err == nil {
+				metrics.QueueDepth.Set(float64(n))
+			}
+			if n, err := s.broker.ScheduledLen(ctx); err == nil {
+				metrics.ScheduledDepth.Set(float64(n))
+			}
+			if n, err := s.broker.PendingLen(ctx, job.DefaultQueue); err == nil {
+				metrics.InFlight.Set(float64(n))
+			}
+			if n, err := s.broker.DeadLen(ctx); err == nil {
+				metrics.DLQSize.Set(float64(n))
+			}
 		}
 	}
 }

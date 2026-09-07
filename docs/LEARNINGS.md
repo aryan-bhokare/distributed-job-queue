@@ -177,3 +177,25 @@ current as we go, not at the end.
   in JS — no extra server work. Same events, two renderings (the board + the feed).
 - **New event `reclaimed`** is emitted by the reaper purely so the UI can narrate recovery; the job
   then flows through the normal started→done events, so its card visibly hops to the new worker.
+
+## Phase 8 — observability (Prometheus + Grafana) (2026-09-07)
+
+- **The event bus is a free metrics aggregation point.** The dashboard already receives every
+  transition, so counters/histograms (`jobs_processed_total{type,status}`, `job_duration_seconds`,
+  retries, reclaims) come straight from `metrics.Record(event)` in the pump loop — no per-worker
+  scrape ports. Gauges (`queue_depth`, `jobs_in_flight`, `scheduled_depth`, `dlq_size`) come from a
+  2s Redis poll. Tradeoff: metrics need the dashboard running, and a dashboard restart resets
+  counters (Prometheus tolerates counter resets). A huge fleet would instrument each worker and
+  scrape all; here one seam is cleaner.
+- **`promauto` auto-registers** collectors to the default registry, and `promhttp.Handler()` serves
+  them — so exposing `/metrics` is two lines. `CounterVec`/`HistogramVec` take label names up front;
+  `.WithLabelValues("send_email","succeeded").Inc()` at call sites.
+- **Counters vs gauges vs histograms:** counter = monotonic total (rate() it in PromQL for /sec);
+  gauge = point-in-time value that goes up and down (queue depth); histogram = bucketed
+  observations, so `histogram_quantile(0.95, rate(..._bucket[5m]))` gives p95 latency.
+- **Scraping a host process from a container:** Prometheus in Docker reaches the host dashboard via
+  `host.docker.internal:8080` (added `extra_hosts: host-gateway` for Linux parity).
+- **Grafana provisioning:** a datasource YAML (pinned `uid: prometheus`) + a dashboards provider
+  YAML pointing at a folder of dashboard JSON → the dashboard appears automatically, no clicking.
+  Anonymous admin (`GF_AUTH_*`) makes it a zero-friction demo.
+- Verified: Prometheus target `up`, `sum(jobs_processed_total)` queryable, Grafana healthy.
