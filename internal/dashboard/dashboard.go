@@ -21,6 +21,7 @@ import (
 	"github.com/aryan-bhokare/distributed-job-queue/internal/broker"
 	"github.com/aryan-bhokare/distributed-job-queue/internal/events"
 	"github.com/aryan-bhokare/distributed-job-queue/internal/job"
+	"github.com/aryan-bhokare/distributed-job-queue/pkg/jobqueue"
 	"github.com/aryan-bhokare/distributed-job-queue/web"
 )
 
@@ -41,8 +42,8 @@ type jobView struct {
 
 type Server struct {
 	rdb    *redis.Client
-	broker *broker.Broker
-	pub    *events.Publisher
+	broker *broker.Broker      // for health checks
+	client *jobqueue.Client    // for the enqueue control endpoint
 	log    *slog.Logger
 
 	mu      sync.Mutex
@@ -55,7 +56,7 @@ func NewServer(rdb *redis.Client) *Server {
 	return &Server{
 		rdb:     rdb,
 		broker:  broker.New(rdb),
-		pub:     events.NewPublisher(rdb),
+		client:  jobqueue.New(rdb),
 		log:     slog.Default().With("svc", "dashboard"),
 		clients: make(map[chan []byte]struct{}),
 		jobs:    make(map[string]*jobView),
@@ -199,7 +200,8 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
 // (click a button, watch it flow). Kill-worker / fail / delay controls land in
 // Phase 7.
 func (s *Server) handleEnqueue(w http.ResponseWriter, r *http.Request) {
-	typ := r.URL.Query().Get("type") // optional: send_email|generate_pdf|flaky|always_fail
+	q := r.URL.Query()
+	typ := q.Get("type") // optional: send_email|generate_pdf|flaky|always_fail
 	var payload any = map[string]any{}
 	switch typ {
 	case "":
@@ -215,19 +217,24 @@ func (s *Server) handleEnqueue(w http.ResponseWriter, r *http.Request) {
 		payload = map[string]any{"doc": "invoice"}
 	}
 
-	j, err := job.New(typ, payload)
+	var opts []jobqueue.Option
+	if typ == "always_fail" {
+		opts = append(opts, jobqueue.WithMaxRetries(3)) // reach the DLQ quickly in the demo
+	}
+
+	var (
+		j   job.Job
+		err error
+	)
+	if delay, derr := time.ParseDuration(q.Get("delay")); derr == nil && delay > 0 {
+		j, err = s.client.EnqueueIn(r.Context(), delay, typ, payload, opts...)
+	} else {
+		j, err = s.client.Enqueue(r.Context(), typ, payload, opts...)
+	}
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	if typ == "always_fail" {
-		j.MaxRetries = 3 // fewer retries so it reaches the DLQ quickly in the demo
-	}
-	if err := s.broker.Enqueue(r.Context(), j); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	s.pub.Publish(r.Context(), events.Event{Kind: events.Enqueued, JobID: j.ID, JobType: j.Type, Queue: j.Queue})
 	w.WriteHeader(http.StatusAccepted)
 	_ = json.NewEncoder(w).Encode(map[string]string{"id": j.ID, "type": j.Type})
 }

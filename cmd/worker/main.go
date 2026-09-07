@@ -35,6 +35,10 @@ func main() {
 	if n, err := strconv.Atoi(os.Getenv("WORKER_CONCURRENCY")); err == nil {
 		w.SetConcurrency(n)
 	}
+	// REAPER_MIN_IDLE must exceed the longest job duration (default 15s in New).
+	if d, err := time.ParseDuration(os.Getenv("REAPER_MIN_IDLE")); err == nil {
+		w.SetReaper(d, 0)
+	}
 
 	// Demo handler #1: instant "email send" — the clean happy path.
 	w.Register("send_email", func(ctx context.Context, j job.Job) error {

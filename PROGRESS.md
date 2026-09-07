@@ -3,43 +3,46 @@
 > Single source of truth for "where we are." Update at the end of every work chunk so any fresh
 > session can resume from here.
 
-**Status:** ✅ Phase 4 (retries + backoff + DLQ, incl. the scheduler) complete and proven. Next:
-Phase 5 (delayed-jobs `EnqueueIn` API — small, scheduler already exists) then Phase 6 (reaper).
+**Status:** ✅ Phases 1–6 complete and proven. Next: Phase 7 (interactive demo / happy-path tour),
+then Phase 8 (observability), Phase 9 (production infra).
 
-## Done
+## Done (all verified end-to-end)
 - Public repo: https://github.com/aryan-bhokare/distributed-job-queue
 - Design + ADRs (0002 streams, 0003 dashboard) + reading-backlog.
-- **Phase 1:** Job envelope+ULID, broker (XADD/XGROUP/XREADGROUP/XACK), worker consume→handle→ack.
-- **Phase 2:** event bus (Pub/Sub), dashboard (SSE hub + snapshot + /api/enqueue), embedded UI.
-- **Phase 3:** worker pool (WORKER_CONCURRENCY), graceful shutdown (two-context drain), WORKER_NAME.
-- **Phase 4:** broker `Schedule`/`PushDead`/`MoveDue` (atomic Lua) + `jobs:scheduled` ZSET +
-  `jobs:dead` DLQ; worker `handleFailure` (retry-with-backoff then DLQ) + `backoff()` (exp + equal
-  jitter); `internal/scheduler` promotes due jobs (run inside cmd/worker); events `retrying`/`dead`;
-  dashboard Retrying/Dead lanes + counters + Flaky/Always-fail buttons + typed `/api/enqueue?type=`.
-  Verified: flaky job retried twice (backoff 0.4s→0.85s) then succeeded; always_fail (max_retries=3)
-  dead-lettered after 4 tries (backoff 0.5s→1.2s→2.0s); DLQ=1, scheduled=0, PEL=0. build/vet clean.
+- **P1** vertical slice (enqueue→consume→handle→ack). **P2** event bus (Pub/Sub) + live dashboard
+  (SSE). **P3** worker pool + graceful shutdown (two-context drain). **P4** retries + backoff +
+  jitter + DLQ + scheduler (atomic Lua move). **P5** delayed jobs (`pkg/jobqueue` client with
+  `Enqueue`/`EnqueueIn`, `-in` CLI flag, dashboard "Delay 6s"). **P6** reaper — `XAUTOCLAIM`
+  reclaims PEL entries idle past `REAPER_MIN_IDLE` and reprocesses them.
+- Latest proofs: delayed `-in 4s` job waited then ran; `kill -9` a worker mid-job → another
+  worker's reaper recovered the same job ID, `XPENDING` 1→0. build/vet clean.
 
 ## In flight
-- Nothing — Phase 4 committed.
+- Nothing — Phases 5 & 6 committed.
 
 ## Next steps
-- **Phase 5:** add `Broker.EnqueueIn(ctx, delay, job)` (= Schedule at now+delay) + a `pkg/jobqueue`
-  public client, and a CLI flag / dashboard control for delayed enqueue. Scheduler already moves them.
-- **Phase 6:** reaper — `XAUTOCLAIM` entries idle in the PEL past a threshold (recovers jobs from
-  hard-crashed workers / scheduling-write failures). Add a dashboard "kill worker" demo.
+- **Phase 7 (interactive tour):** guided "happy-path" narration + a real **"kill worker" button**.
+  Needs the dashboard to manage worker *processes* (spawn/kill) so a visitor can trigger the reaper
+  demo from the browser. Consider: dashboard launches N worker subprocesses it can kill, or an
+  in-process demo-worker it can cancel. Emit a `reclaimed` event so the UI narrates recovery.
+- **Phase 8 (observability):** Prometheus metrics (jobs_processed_total{status}, job_duration
+  histogram, queue_depth gauge, retries, dlq_size) at `/metrics`; Grafana dashboard.
+- **Phase 9 (infra):** multi-stage Dockerfile (distroless), full compose stack (app+redis+prometheus
+  +grafana), K8s manifests (probes/HPA), GitHub Actions CI/CD, load test. Also: MAXLEN stream capping,
+  a DLQ re-drive tool.
 
 ## How to run (Aryan's machine — 6379 taken, use 6380)
 ```
 REDIS_PORT=6380 docker compose up -d
 REDIS_ADDR=localhost:6380 go run ./cmd/dashboard      # http://localhost:8080
 REDIS_ADDR=localhost:6380 WORKER_CONCURRENCY=5 go run ./cmd/worker
-# dashboard buttons: "+ Job", "Flaky (retries)", "Always-fail (DLQ)", "Burst ×10"
+REDIS_ADDR=localhost:6380 go run ./cmd/enqueue -in 8s send_email '{"to":"x"}'   # delayed
+# dashboard buttons: + Job · Delay 6s · Flaky (retries) · Always-fail (DLQ) · Burst ×10
 ```
-Stop Redis: `REDIS_PORT=6380 docker compose down`.
+Reaper demo: run two workers (WORKER_NAME=A / =B, REAPER_MIN_IDLE=4s), enqueue a generate_pdf,
+`kill -9` the one processing it, watch the other reclaim it.
 
 ## Notes / gotchas
-- Ack the failing entry only AFTER the retry is scheduled / DLQ'd; on a scheduling failure, leave it
-  in the PEL for the reaper.
-- Scheduler uses one atomic Lua move → safe to run in every worker.
-- Streams still retain entries after XACK (MAXLEN capping still TODO).
-- DLQ (`jobs:dead`) is a stream; a re-drive tool (move dead → back to queue) would be a nice extra.
+- Reaper `minIdle` MUST exceed longest job duration (else it reaps live in-flight jobs).
+- Both jobs-channel producers (fetcher + reaper) must stop before `close(jobs)` (producers WaitGroup).
+- Streams still retain entries after XACK — MAXLEN capping still TODO (Phase 9).

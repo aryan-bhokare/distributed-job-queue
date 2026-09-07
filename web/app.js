@@ -42,8 +42,8 @@ function render(v) {
   ];
   if (v.worker) bits.push(`<span class="meta">${esc(v.worker)}</span>`);
   if (v.attempt) bits.push(`<span class="meta">try ${v.attempt + 1}</span>`);
-  if (v.state === "retrying" && v.retry_in_ms)
-    bits.push(`<span class="meta">retry ~${(v.retry_in_ms / 1000).toFixed(1)}s</span>`);
+  if ((v.state === "retrying" || v.state === "queued") && v.retry_in_ms)
+    bits.push(`<span class="meta">${v.state === "queued" ? "starts" : "retry"} ~${(v.retry_in_ms / 1000).toFixed(1)}s</span>`);
   if (v.duration_ms && (v.state === "done")) bits.push(`<span class="meta">${v.duration_ms}ms</span>`);
   if (v.error && (v.state === "retrying" || v.state === "dead"))
     bits.push(`<span class="err" title="${esc(v.error)}">${esc(v.error)}</span>`);
@@ -87,8 +87,9 @@ es.onopen  = () => ($("conn").className = "dot ok");
 es.onerror = () => ($("conn").className = "dot bad"); // EventSource auto-reconnects
 
 // --- controls ---------------------------------------------------------------
-const enqueue = (type) => fetch("/api/enqueue" + (type ? "?type=" + type : ""), { method: "POST" });
-$("enqueue").onclick = () => enqueue();
-$("flaky").onclick   = () => enqueue("flaky");
-$("fail").onclick    = () => enqueue("always_fail");
-$("burst").onclick   = () => { for (let i = 0; i < 10; i++) enqueue(); };
+const post = (qs) => fetch("/api/enqueue" + (qs ? "?" + qs : ""), { method: "POST" });
+$("enqueue").onclick = () => post("");
+$("delay").onclick   = () => post("delay=6s");
+$("flaky").onclick   = () => post("type=flaky");
+$("fail").onclick    = () => post("type=always_fail");
+$("burst").onclick   = () => { for (let i = 0; i < 10; i++) post(""); };

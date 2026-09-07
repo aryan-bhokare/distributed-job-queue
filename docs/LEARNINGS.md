@@ -128,3 +128,32 @@ current as we go, not at the end.
 - `math/rand/v2` needs no seeding; `rand.Int64N(n)` returns `[0, n)`.
 - `baseBackoff << (n-1)` shifts a `time.Duration` (an int64) — clean way to do `* 2^(n-1)`; guard
   against overflow (`exp <= 0`) and clamp to a cap.
+
+## Phase 5 — delayed jobs + public client (2026-09-07)
+
+- **Delayed jobs reuse the retry machinery.** `EnqueueIn(delay, ...)` just `Schedule`s the job at
+  `now+delay` in the same `jobs:scheduled` ZSET; the scheduler (built in Phase 4) promotes it when
+  due. Proven: an `-in 4s` job sat in the ZSET (`XLEN` of the stream = 0) and ran ~4s later.
+- **`pkg/jobqueue` is the public API.** Producers import `pkg/*`, never `internal/*` (Go enforces
+  this — `internal/` is only importable within the module). The client wraps the broker AND
+  publishes the `enqueued` event, so the CLI and the dashboard no longer duplicate that.
+- **Functional options** (`WithMaxRetries`, `WithQueue`) — the idiomatic Go way to give a function
+  optional, extensible params without a config struct: `func(*job.Job)` closures applied in order.
+- `flag.Duration("in", 0, ...)` gives `-in 10s` parsing for free; `flag.Args()` are the positional
+  leftovers after flags.
+
+## Phase 6 — reaper (dead-worker recovery) (2026-09-07)
+
+- **`XAUTOCLAIM` is the recovery primitive.** It reassigns pending (delivered-but-unacked) entries
+  idle beyond `min-idle-time` to a named consumer and returns them — so a reaper can claim a dead
+  worker's stranded jobs and reprocess them. Proven: `kill -9` a worker mid-job → another worker's
+  reaper reclaimed the exact same job ID ~4s later, finished it, acked. `XPENDING` went 1 → 0.
+- **`minIdle` must exceed the longest job duration.** "Idle" = time since the entry was last
+  delivered, and it keeps growing *while a job legitimately runs*. Too small a threshold reclaims
+  in-flight work and runs it twice. (Idempotent handlers make that safe, but size it right.)
+- **The reaper lives in the worker, feeding the same pool.** It's a second *producer* on the jobs
+  channel (alongside the fetcher). Key concurrency detail: both producers must stop before we
+  `close(jobs)`, or a producer could send on a closed channel (panic). Solved with a producers
+  `sync.WaitGroup` that `Run` waits on before closing.
+- Because `XAUTOCLAIM` is atomic, running a reaper in every worker is safe — a stranded entry is
+  claimed by exactly one.

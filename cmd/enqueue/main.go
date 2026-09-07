@@ -2,32 +2,34 @@
 // exercise the system while building.
 //
 //	go run ./cmd/enqueue send_email '{"to":"a@b.com","template":"welcome"}'
-//	go run ./cmd/enqueue generate_pdf '{"doc":"report"}'
+//	go run ./cmd/enqueue -in 10s generate_pdf '{"doc":"report"}'   # delayed 10s
 package main
 
 import (
 	"context"
 	"encoding/json"
+	"flag"
 	"fmt"
 	"os"
 
 	"github.com/redis/go-redis/v9"
 
-	"github.com/aryan-bhokare/distributed-job-queue/internal/broker"
-	"github.com/aryan-bhokare/distributed-job-queue/internal/events"
-	"github.com/aryan-bhokare/distributed-job-queue/internal/job"
+	"github.com/aryan-bhokare/distributed-job-queue/pkg/jobqueue"
 )
 
 func main() {
-	if len(os.Args) < 2 {
-		fmt.Println("usage: enqueue <type> [json-payload]")
+	in := flag.Duration("in", 0, "delay before the job becomes ready, e.g. 10s (0 = run now)")
+	flag.Parse()
+	args := flag.Args()
+	if len(args) < 1 {
+		fmt.Println("usage: enqueue [-in DURATION] <type> [json-payload]")
 		os.Exit(2)
 	}
-	jobType := os.Args[1]
+	jobType := args[0]
 
 	var payload any = map[string]any{}
-	if len(os.Args) >= 3 {
-		if err := json.Unmarshal([]byte(os.Args[2]), &payload); err != nil {
+	if len(args) >= 2 {
+		if err := json.Unmarshal([]byte(args[1]), &payload); err != nil {
 			fmt.Println("invalid JSON payload:", err)
 			os.Exit(2)
 		}
@@ -35,21 +37,24 @@ func main() {
 
 	rdb := redis.NewClient(&redis.Options{Addr: envOr("REDIS_ADDR", "localhost:6379")})
 	defer rdb.Close()
-	b := broker.New(rdb)
+	client := jobqueue.New(rdb)
+	ctx := context.Background()
 
-	j, err := job.New(jobType, payload)
-	if err != nil {
-		fmt.Println("build job:", err)
-		os.Exit(1)
+	if *in > 0 {
+		j, err := client.EnqueueIn(ctx, *in, jobType, payload)
+		if err != nil {
+			fmt.Println("enqueue:", err)
+			os.Exit(1)
+		}
+		fmt.Printf("scheduled %s job %s to run in %s\n", j.Type, j.ID, in.String())
+		return
 	}
-	if err := b.Enqueue(context.Background(), j); err != nil {
+
+	j, err := client.Enqueue(ctx, jobType, payload)
+	if err != nil {
 		fmt.Println("enqueue:", err)
 		os.Exit(1)
 	}
-	// Tell the dashboard a job just landed (fire-and-forget).
-	events.NewPublisher(rdb).Publish(context.Background(), events.Event{
-		Kind: events.Enqueued, JobID: j.ID, JobType: j.Type, Queue: j.Queue,
-	})
 	fmt.Printf("enqueued %s job %s\n", j.Type, j.ID)
 }
 

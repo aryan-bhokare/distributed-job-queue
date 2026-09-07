@@ -33,22 +33,35 @@ type Worker struct {
 	queue       string
 	broker      *broker.Broker
 	pub         *events.Publisher // may be nil (worker runs fine without a dashboard)
-	handlers    map[string]Handler
-	concurrency int           // number of jobs processed in parallel
-	grace       time.Duration // how long in-flight jobs get to finish on shutdown
-	log         *slog.Logger
+	handlers     map[string]Handler
+	concurrency  int           // number of jobs processed in parallel
+	grace        time.Duration // how long in-flight jobs get to finish on shutdown
+	reapMinIdle  time.Duration // reclaim PEL entries idle longer than this (0 = off)
+	reapInterval time.Duration // how often the reaper scans the PEL
+	log          *slog.Logger
 }
 
 func New(name, queue string, b *broker.Broker, pub *events.Publisher) *Worker {
 	return &Worker{
-		name:        name,
-		queue:       queue,
-		broker:      b,
-		pub:         pub,
-		handlers:    make(map[string]Handler),
-		concurrency: 5,
-		grace:       25 * time.Second,
-		log:         slog.Default().With("worker", name),
+		name:         name,
+		queue:        queue,
+		broker:       b,
+		pub:          pub,
+		handlers:     make(map[string]Handler),
+		concurrency:  5,
+		grace:        25 * time.Second,
+		reapMinIdle:  15 * time.Second, // must exceed the longest expected job duration
+		reapInterval: 5 * time.Second,
+		log:          slog.Default().With("worker", name),
+	}
+}
+
+// SetReaper tunes dead-worker recovery. minIdle must exceed the longest job
+// duration; pass minIdle <= 0 to disable reaping on this worker.
+func (w *Worker) SetReaper(minIdle, interval time.Duration) {
+	w.reapMinIdle = minIdle
+	if interval > 0 {
+		w.reapInterval = interval
 	}
 }
 
@@ -101,9 +114,15 @@ func (w *Worker) Run(ctx context.Context) error {
 		}()
 	}
 
-	// Fetch until ctx is cancelled; the unbuffered channel means we only pull as
-	// fast as the pool drains.
-	w.fetch(ctx, jobs)
+	// Two producers feed the pool: the fetcher (new jobs) and the reaper
+	// (jobs reclaimed from crashed workers). Both stop when ctx is cancelled;
+	// we wait for BOTH before closing `jobs`, so neither ever sends on a closed
+	// channel.
+	var producers sync.WaitGroup
+	producers.Add(2)
+	go func() { defer producers.Done(); w.fetch(ctx, jobs) }()
+	go func() { defer producers.Done(); w.reap(ctx, jobs) }()
+	producers.Wait()
 
 	// --- graceful shutdown ---
 	w.log.Info("stop signal received; draining in-flight jobs", "grace", w.grace.String())
@@ -141,6 +160,41 @@ func (w *Worker) fetch(ctx context.Context, jobs chan<- broker.Delivered) {
 			case jobs <- d:
 			case <-ctx.Done():
 				return // stop feeding; delivered-but-unfed entries remain in the PEL
+			}
+		}
+	}
+}
+
+// reap periodically reclaims jobs stranded in the PEL by crashed workers (via
+// XAUTOCLAIM) and feeds them back into the pool for reprocessing. This is our
+// auto-recovery: if a worker dies mid-job without acking, another worker's reaper
+// picks the job up after reapMinIdle. Disabled when reapMinIdle <= 0.
+func (w *Worker) reap(ctx context.Context, jobs chan<- broker.Delivered) {
+	if w.reapMinIdle <= 0 {
+		return
+	}
+	ticker := time.NewTicker(w.reapInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			claimed, err := w.broker.Reap(ctx, w.queue, w.name, w.reapMinIdle, int64(w.concurrency))
+			if err != nil {
+				if ctx.Err() != nil {
+					return
+				}
+				w.log.Error("reap failed", "err", err)
+				continue
+			}
+			for _, d := range claimed {
+				w.log.Warn("♻️  reclaimed stranded job from the PEL", "job_id", d.Job.ID, "type", d.Job.Type)
+				select {
+				case jobs <- d:
+				case <-ctx.Done():
+					return
+				}
 			}
 		}
 	}

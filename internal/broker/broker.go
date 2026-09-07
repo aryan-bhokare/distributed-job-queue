@@ -166,5 +166,40 @@ func (b *Broker) MoveDue(ctx context.Context, now time.Time, limit int64) (int, 
 	return n, nil
 }
 
+// Reap claims stream entries that have been pending (delivered but un-acked) for
+// longer than minIdle, reassigning them to `consumer`. This is how we recover
+// jobs a crashed worker left stranded in the PEL. It returns the claimed jobs,
+// which the caller processes + acks like any normal delivery.
+//
+// NOTE: `minIdle` must exceed your longest expected job duration. A job still
+// legitimately being processed also grows "idle" (time since delivery), so too
+// small a threshold would reclaim in-flight work and run it twice. (Idempotent
+// handlers make that safe, but avoid it by sizing minIdle correctly.)
+func (b *Broker) Reap(ctx context.Context, queue, consumer string, minIdle time.Duration, count int64) ([]Delivered, error) {
+	msgs, _, err := b.rdb.XAutoClaim(ctx, &redis.XAutoClaimArgs{
+		Stream:   streamKey(queue),
+		Group:    ConsumerGroup,
+		Consumer: consumer,
+		MinIdle:  minIdle,
+		Start:    "0-0", // scan the whole PEL from the start
+		Count:    count,
+	}).Result()
+	if err != nil {
+		return nil, fmt.Errorf("xautoclaim: %w", err)
+	}
+
+	var out []Delivered
+	for _, msg := range msgs {
+		raw, _ := msg.Values["data"].(string)
+		j, jerr := job.Unmarshal([]byte(raw))
+		if jerr != nil {
+			_ = b.Ack(ctx, queue, msg.ID) // corrupt entry: drop it
+			continue
+		}
+		out = append(out, Delivered{EntryID: msg.ID, Job: j})
+	}
+	return out, nil
+}
+
 // Ping verifies Redis is reachable (used by health checks and startup).
 func (b *Broker) Ping(ctx context.Context) error { return b.rdb.Ping(ctx).Err() }
